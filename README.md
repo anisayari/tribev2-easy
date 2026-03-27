@@ -1,59 +1,111 @@
 <div align="center">
 
-# TRIBE v2
+# TRIBE v2 Easy
 
-**A Foundation Model of Vision, Audition, and Language for In-Silico Neuroscience**
+**A practical local interface for Meta's TRIBE v2 multimodal brain-encoding model**
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/facebookresearch/tribev2/blob/main/tribe_demo.ipynb)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-📄 [Paper](https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/) ▶️ [Demo](https://aidemos.atmeta.com/tribev2/) | 🤗 [Weights](https://huggingface.co/facebook/tribev2)
+[Paper](https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/) |
+[Official Demo](https://aidemos.atmeta.com/tribev2/) |
+[Weights](https://huggingface.co/facebook/tribev2)
 
 </div>
 
-TRIBE v2 is a deep multimodal brain encoding model that predicts fMRI brain responses to naturalistic stimuli (video, audio, text). It combines state-of-the-art feature extractors — [**LLaMA 3.2**](https://huggingface.co/meta-llama/Llama-3.2-3B) (text), [**V-JEPA2**](https://huggingface.co/facebook/vjepa2-vitg-fpc64-256) (video), and [**Wav2Vec-BERT**](https://huggingface.co/facebook/w2v-bert-2.0) (audio) — into a unified Transformer architecture that maps multimodal representations onto the cortical surface.
+TRIBE v2 is a multimodal brain-encoding model that predicts fMRI activity from video, audio, and text. It combines large pretrained encoders for language, vision, and audition, then maps those features to cortical activity on the `fsaverage5` surface.
+
+This fork keeps the original research code, adds Windows-friendly inference fixes, supports modern Blackwell GPUs through newer PyTorch builds, and includes a packaged local dashboard for easier day-to-day use.
 
 ## Quick start
 
-Load a pretrained model from HuggingFace and predict brain responses to a video:
+Load the pretrained model and predict responses from a video:
 
 ```python
 from tribev2 import TribeModel
 
 model = TribeModel.from_pretrained("facebook/tribev2", cache_folder="./cache")
-
-df = model.get_events_dataframe(video_path="path/to/video.mp4")
-preds, segments = model.predict(events=df)
+events = model.get_events_dataframe(video_path="path/to/video.mp4")
+preds, segments = model.predict(events)
 print(preds.shape)  # (n_timesteps, n_vertices)
 ```
 
-Predictions are for the "average" subject (see paper for details) and live on the **fsaverage5** cortical mesh (~20k vertices). You can also pass `text_path` or `audio_path` to `model.get_events_dataframe` — text is automatically converted to speech and transcribed to obtain word-level timings.
+You can also build text events directly, without the TTS + ASR path:
 
-For a full walkthrough with brain visualizations, see the [Colab demo notebook](https://colab.research.google.com/github/facebookresearch/tribev2/blob/main/tribe_demo.ipynb).
+```python
+from tribev2 import TribeModel
+
+model = TribeModel.from_pretrained("facebook/tribev2", cache_folder="./cache")
+events = model.get_events_dataframe(
+    text_path="path/to/script.txt",
+    direct_text=True,
+    seconds_per_word=0.45,
+)
+preds, segments = model.predict(events)
+```
+
+Predictions are returned on the `fsaverage5` cortical mesh, around 20k vertices.
 
 ## Installation
 
-**Basic** (inference only):
+Basic inference:
+
 ```bash
 pip install -e .
 ```
 
-**With brain visualization**:
+With plotting:
+
 ```bash
 pip install -e ".[plotting]"
 ```
 
-**With training dependencies** (PyTorch Lightning, W&B, etc.):
+With the dashboard:
+
+```bash
+pip install -e ".[plotting,dashboard]"
+tribev2-dashboard
+```
+
+With training dependencies:
+
 ```bash
 pip install -e ".[training]"
 ```
 
-## Training a model from scratch
+## Dashboard
 
-### 1. Set environment variables
+Launch the packaged dashboard with:
 
-Configure data/output paths and Slurm partition (or edit `tribev2/grids/defaults.py` directly):
+```bash
+tribev2-dashboard
+```
+
+The dashboard supports:
+
+- Video upload
+- Audio upload
+- Raw text or `.txt` input
+- Local inference
+- Event dataframe inspection
+- Timestep-by-timestep cortical visualization
+- CSV / NPY export of predictions
+
+## Practical notes
+
+- Text predictions use the gated [LLaMA 3.2-3B](https://huggingface.co/meta-llama/Llama-3.2-3B) encoder. You may need a Hugging Face token:
+
+```bash
+huggingface-cli login
+```
+
+- Audio transcription still requires `uvx whisperx` if you enable ASR in the pipeline or dashboard.
+- For NVIDIA Blackwell GPUs such as the RTX 5090, use a PyTorch build with CUDA 12.8+ and Blackwell support, such as `torch 2.7.x` or newer.
+
+## Training
+
+Set the original environment variables before running the research training scripts:
 
 ```bash
 export DATAPATH="/path/to/studies"
@@ -61,63 +113,41 @@ export SAVEPATH="/path/to/output"
 export SLURM_PARTITION="your_partition"
 ```
 
-### 2. Authenticate with HuggingFace
+Then run either:
 
-The text encoder requires access to the gated [LLaMA 3.2-3B](https://huggingface.co/meta-llama/Llama-3.2-3B) model:
-
-```bash
-huggingface-cli login
-```
-
-Create a `read` [access token](https://huggingface.co/settings/tokens) and paste it when prompted.
-
-### 3. Run training
-
-**Local test run:**
 ```bash
 python -m tribev2.grids.test_run
-```
-
-**Grid search on Slurm:**
-```bash
 python -m tribev2.grids.run_cortical
 python -m tribev2.grids.run_subcortical
 ```
 
 ## Project structure
 
-```
+```text
 tribev2/
-├── main.py              # Experiment pipeline: Data, TribeExperiment
-├── model.py             # FmriEncoder: Transformer-based multimodal→fMRI model
-├── pl_module.py         # PyTorch Lightning training module
-├── demo_utils.py        # TribeModel and helpers for inference from text/audio/video
-├── eventstransforms.py  # Custom event transforms (word extraction, chunking, …)
-├── utils.py             # Multi-study loading, splitting, subject weighting
-├── utils_fmri.py        # Surface projection (MNI / fsaverage) and ROI analysis
-├── grids/
-│   ├── defaults.py      # Full default experiment configuration
-│   └── test_run.py      # Quick local test entry point
-├── plotting/            # Brain visualization (PyVista & Nilearn backends)
-└── studies/             # Dataset definitions (Algonauts2025, Lahner2024, …)
+|-- main.py
+|-- model.py
+|-- pl_module.py
+|-- demo_utils.py
+|-- easy.py
+|-- dashboard_app.py
+|-- cli.py
+|-- eventstransforms.py
+|-- plotting/
+|-- studies/
+`-- grids/
 ```
 
-## Contributing to open science
-
-If you use this software, please share your results with the broader research community using the following citation:
+## Citation
 
 ```bibtex
 @article{dAscoli2026TribeV2,
   title={A foundation model of vision, audition, and language for in-silico neuroscience},
-  author={d'Ascoli, St{\'e}phane and Rapin, J{\'e}r{\'e}my and Benchetrit, Yohann and Brookes, Teon and Begany, Katelyn and Raugel, Jos{\'e}phine and Banville, Hubert and King, Jean-R{\'e}mi},
+  author={d'Ascoli, Stephane and Rapin, Jeremy and Benchetrit, Yohann and Brookes, Teon and Begany, Katelyn and Raugel, Josephine and Banville, Hubert and King, Jean-Remi},
   year={2026}
 }
 ```
 
 ## License
 
-This project is licensed under CC-BY-NC-4.0. See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
+This project remains licensed under CC-BY-NC-4.0. See [LICENSE](LICENSE).

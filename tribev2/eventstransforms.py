@@ -132,7 +132,15 @@ class ExtractWordsFromAudio(EventsTransform):
             ]
             cmd = [c for c in cmd if c]  # remove empty args
             env = {k: v for k, v in os.environ.items() if k != "MPLBACKEND"}
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "whisperx transcription requires `uvx whisperx` to be "
+                    "installed and available in PATH. Install `uv`, then run "
+                    "`uv tool install whisperx`, or use audio_only/direct_text "
+                    "mode."
+                ) from exc
             if result.returncode != 0:
                 raise RuntimeError(f"whisperx failed:\n{result.stderr}")
 

@@ -7,8 +7,9 @@
 """TribeModel for inference and utilities for building event DataFrames."""
 
 import logging
+import re
 import typing as tp
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,39 @@ VALID_SUFFIXES: dict[str, set[str]] = {
     "audio_path": {".wav", ".mp3", ".flac", ".ogg"},
     "video_path": {".mp4", ".avi", ".mkv", ".mov", ".webm"},
 }
+
+
+class _PortableUnsafeLoader(yaml.UnsafeLoader):
+    """UnsafeLoader variant that can deserialize POSIX paths on Windows."""
+
+
+def _construct_posix_path(
+    loader: yaml.UnsafeLoader, node: yaml.SequenceNode
+) -> str:
+    parts = loader.construct_sequence(node)
+    return str(PurePosixPath(*parts))
+
+
+_PortableUnsafeLoader.add_constructor(
+    "tag:yaml.org,2002:python/object/apply:pathlib.PosixPath",
+    _construct_posix_path,
+)
+
+
+def _cuda_runtime_supported() -> bool:
+    """Return True only when the installed torch build can run this GPU."""
+    if not torch.cuda.is_available():
+        return False
+    try:
+        major, minor = torch.cuda.get_device_capability()
+        supported_arches = {
+            arch.removeprefix("sm_")
+            for arch in torch.cuda.get_arch_list()
+            if arch.startswith("sm_")
+        }
+        return f"{major}{minor}" in supported_arches
+    except Exception:
+        return False
 
 
 def download_file(url: str, path: str | Path) -> Path:
@@ -93,6 +127,64 @@ def get_audio_and_text_events(
     for transform in transforms:
         events = transform(events)
     return standardize_events(events)
+
+
+def build_text_events_from_text(
+    text: str,
+    *,
+    seconds_per_word: float = 0.45,
+    max_context_words: int = 128,
+    timeline: str = "default",
+    subject: str = "default",
+    language: str | None = None,
+) -> pd.DataFrame:
+    """Create Word events directly from raw text without TTS or ASR."""
+    normalized = text.replace("\r\n", "\n").strip()
+    if not normalized:
+        raise ValueError("Text input is empty.")
+    if seconds_per_word <= 0:
+        raise ValueError("seconds_per_word must be strictly positive.")
+    if max_context_words < 1:
+        raise ValueError("max_context_words must be at least 1.")
+
+    sentence_splitter = re.compile(r"(?<=[.!?])(?:\s+|\n+)|\n+")
+    word_pattern = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", flags=re.UNICODE)
+    sentences = [
+        sentence.strip()
+        for sentence in sentence_splitter.split(normalized)
+        if sentence.strip()
+    ]
+    if not sentences:
+        sentences = [normalized]
+
+    rows: list[dict[str, tp.Any]] = []
+    context_words: list[str] = []
+    current_start = 0.0
+    for sequence_id, sentence in enumerate(sentences):
+        words = word_pattern.findall(sentence)
+        if not words:
+            continue
+        for word in words:
+            context_words.append(word)
+            row = {
+                "type": "Word",
+                "text": word,
+                "start": current_start,
+                "duration": seconds_per_word,
+                "sequence_id": sequence_id,
+                "sentence": sentence,
+                "context": " ".join(context_words[-max_context_words:]),
+                "timeline": timeline,
+                "subject": subject,
+            }
+            if language is not None:
+                row["language"] = language
+            rows.append(row)
+            current_start += seconds_per_word
+
+    if not rows:
+        raise ValueError("No valid words were found in the provided text.")
+    return standardize_events(pd.DataFrame(rows))
 
 
 class TextToEvents(pydantic.BaseModel):
@@ -190,22 +282,34 @@ class TribeModel(TribeExperiment):
         if cache_folder is not None:
             Path(cache_folder).mkdir(parents=True, exist_ok=True)
         if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        checkpoint_dir = Path(checkpoint_dir)
-        if checkpoint_dir.exists():
-            config_path = checkpoint_dir / "config.yaml"
-            ckpt_path = checkpoint_dir / checkpoint_name
+            device = "cuda" if _cuda_runtime_supported() else "cpu"
+        checkpoint_dir_str = str(checkpoint_dir)
+        local_checkpoint_dir = Path(checkpoint_dir_str)
+        if local_checkpoint_dir.exists():
+            config_path = local_checkpoint_dir / "config.yaml"
+            ckpt_path = local_checkpoint_dir / checkpoint_name
         else:
             from huggingface_hub import hf_hub_download
 
-            repo_id = str(checkpoint_dir)
+            # Keep Hugging Face repo ids POSIX-style on Windows; converting
+            # through Path() turns "org/repo" into "org\\repo" and breaks
+            # hf_hub_download validation.
+            repo_id = checkpoint_dir_str.replace("\\", "/")
             config_path = hf_hub_download(repo_id, "config.yaml")
             ckpt_path = hf_hub_download(repo_id, checkpoint_name)
         with open(config_path, "r") as f:
-            config = ConfDict(yaml.load(f, Loader=yaml.UnsafeLoader))
+            config = ConfDict(yaml.load(f, Loader=_PortableUnsafeLoader))
         for modality in ["text", "audio", "video"]:
             config[f"data.{modality}_feature.infra.folder"] = cache_folder
             config[f"data.{modality}_feature.infra.cluster"] = cluster
+        for key in [
+            "data.text_feature.device",
+            "data.audio_feature.device",
+            "data.image_feature.image.device",
+            "data.video_feature.image.device",
+        ]:
+            if key in config:
+                config[key] = device
 
         for param in [
             "infra.workdir",
@@ -245,6 +349,10 @@ class TribeModel(TribeExperiment):
         text_path: str | None = None,
         audio_path: str | None = None,
         video_path: str | None = None,
+        *,
+        direct_text: bool = False,
+        seconds_per_word: float = 0.45,
+        max_context_words: int = 128,
     ) -> pd.DataFrame:
         """Build an events DataFrame from exactly one input source.
 
@@ -258,6 +366,14 @@ class TribeModel(TribeExperiment):
         video_path:
             Path to a video file (``.mp4``, ``.avi``, ``.mkv``, ``.mov``,
             ``.webm``).
+        direct_text:
+            When ``True`` and ``text_path`` is provided, build word events
+            directly from the text instead of using TTS + ASR.
+        seconds_per_word:
+            Synthetic duration assigned to each word when ``direct_text=True``.
+        max_context_words:
+            Number of trailing words kept in each word context when
+            ``direct_text=True``.
 
         Returns
         -------
@@ -304,6 +420,12 @@ class TribeModel(TribeExperiment):
             text = path.read_text(encoding="utf-8")
             if not text.strip():
                 raise ValueError(f"Text file is empty: {path}")
+            if direct_text:
+                return build_text_events_from_text(
+                    text,
+                    seconds_per_word=seconds_per_word,
+                    max_context_words=max_context_words,
+                )
             return TextToEvents(
                 text=text,
                 infra={"folder": self.cache_folder, "mode": "retry"},
@@ -318,6 +440,26 @@ class TribeModel(TribeExperiment):
             "subject": "default",
         }
         return get_audio_and_text_events(pd.DataFrame([event]))
+
+    def get_text_events_dataframe(
+        self,
+        text: str,
+        *,
+        seconds_per_word: float = 0.45,
+        max_context_words: int = 128,
+        timeline: str = "default",
+        subject: str = "default",
+        language: str | None = None,
+    ) -> pd.DataFrame:
+        """Build direct text events without passing through TTS + ASR."""
+        return build_text_events_from_text(
+            text,
+            seconds_per_word=seconds_per_word,
+            max_context_words=max_context_words,
+            timeline=timeline,
+            subject=subject,
+            language=language,
+        )
 
     def predict(
         self, events: pd.DataFrame, verbose: bool = True

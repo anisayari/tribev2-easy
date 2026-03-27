@@ -14,9 +14,9 @@ authors = [{name = "Meta Platforms, Inc."}]
 dependencies = [
   "neuralset==0.0.2",
   "neuraltrain==0.0.2",
-  "torch>=2.5.1,<2.7",
+  "torch>=2.5.1,<2.8",
   "numpy==2.2.6",
-  "torchvision>=0.20,<0.22",
+  "torchvision>=0.20,<0.23",
   "x_transformers==1.27.20",
   "einops",
   "pyyaml",
@@ -33,8 +33,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/facebookresearch/tribev2"
-Repository = "https://github.com/facebookresearch/tribev2"
+Homepage = "https://github.com/anisayari/tribev2-easy"
+Repository = "https://github.com/anisayari/tribev2-easy"
+
+[project.scripts]
+tribev2-dashboard = "tribev2.cli:launch_dashboard"
 
 [project.optional-dependencies]
   plotting = [
@@ -55,6 +58,9 @@ Repository = "https://github.com/facebookresearch/tribev2"
   ]
   test = [
     "pytest",
+  ]
+  dashboard = [
+    "streamlit>=1.44,<2",
   ]
 
 [tool.black]
