@@ -6,6 +6,8 @@
 
 import tempfile
 import typing as tp
+from pathlib import Path
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -157,8 +159,12 @@ class PlotBrainPyvista(BasePlotBrain):
                     annotated_rois,
                     **(annotated_rois_kwargs or {}),
                 )
-            with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
-                img = pl.screenshot(tmp.name, return_img=True)
+            fd, tmp_name = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            try:
+                img = pl.screenshot(tmp_name, return_img=True)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
             img = tight_crop(img, w_pad=self.w_pad, h_pad=self.h_pad)
             pl.clear()
             ax.axis("off")
@@ -268,10 +274,14 @@ class PlotBrainPyvista(BasePlotBrain):
 
             vec, up = VIEW_DICT[view]
             pl.view_vector(vec, viewup=up)
-            with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+            fd, tmp_name = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            try:
                 img = pl.screenshot(
-                    tmp.name, return_img=True, transparent_background=True
+                    tmp_name, return_img=True, transparent_background=True
                 )
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
             img = tight_crop(img, w_pad=self.w_pad, h_pad=self.h_pad)
             pl.clear()
             ax.axis("off")

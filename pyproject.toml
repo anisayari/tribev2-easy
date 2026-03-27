@@ -61,6 +61,10 @@ tribev2-dashboard = "tribev2.cli:launch_dashboard"
   ]
   dashboard = [
     "streamlit>=1.44,<2",
+    "trame>=3.12",
+    "trame-vtk>=2.11",
+    "trame-vuetify>=3.2",
+    "nest_asyncio2>=1.7.2",
   ]
 
 [tool.black]

@@ -90,6 +90,9 @@ The dashboard supports:
 - Local inference
 - Event dataframe inspection
 - Timestep-by-timestep cortical visualization
+- Interactive 3D cortical view in the browser
+- MP4 export of prediction dynamics
+- Built-in explanation of what the brain maps show
 - CSV / NPY export of predictions
 
 ## Practical notes

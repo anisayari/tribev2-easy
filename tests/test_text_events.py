@@ -1,7 +1,14 @@
 from pathlib import Path
 
+import numpy as np
+
 from tribev2.demo_utils import build_text_events_from_text
-from tribev2.easy import DEFAULT_TEXT_MODEL, prepare_events, resolve_text_model_name
+from tribev2.easy import (
+    DEFAULT_TEXT_MODEL,
+    describe_timestep,
+    prepare_events,
+    resolve_text_model_name,
+)
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -33,3 +40,14 @@ def test_prepare_events_supports_direct_text(tmp_path: Path):
 
 def test_resolve_text_model_name_defaults_to_public_repo():
     assert resolve_text_model_name() == DEFAULT_TEXT_MODEL
+
+
+def test_describe_timestep_returns_readable_summary():
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :128] = 2.0
+
+    description = describe_timestep(preds, timestep=0)
+
+    assert description["laterality"] in {"gauche", "droite", "bilaterale"}
+    assert description["focus_share"] > 0
+    assert "Les sommets les plus saillants" in description["summary"]

@@ -1,24 +1,44 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 import shutil
 import uuid
+import warnings
 
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     PredictionRun,
+    describe_timestep,
+    export_prediction_video,
     load_model,
     predict_from_prepared_events,
     prepare_events,
     render_brain_figure,
+    render_interactive_brain_html,
     render_prediction_mosaic,
     segment_preview,
     summarize_predictions,
 )
+
+
+def configure_runtime_noise() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"LabelEncoder: event_types has not been set.*",
+        category=UserWarning,
+    )
+    logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
 
 
 def apply_theme() -> None:
@@ -108,6 +128,26 @@ def build_npy_download(preds: np.ndarray) -> bytes:
     np.save(buffer, preds)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def render_reading_guide(
+    *,
+    input_kind: str,
+    timestep: int,
+    duration: float | None,
+) -> None:
+    st.markdown("**Comment lire cette carte**")
+    notes = [
+        "La surface affiche le cortex sur le maillage `fsaverage5`, pas un cerveau individuel.",
+        "Les couleurs chaudes indiquent une reponse predite plus forte a ce timestep.",
+        "Ce signal est une prediction du modele TRIBE, pas une mesure fMRI reelle.",
+    ]
+    if duration is not None:
+        notes.append(
+            f"Le timestep {timestep} couvre environ {duration:.2f}s du stimulus {input_kind}."
+        )
+    for note in notes:
+        st.markdown(f"- {note}")
 
 
 def input_panel(cache_folder: Path) -> tuple[dict, dict]:
@@ -238,11 +278,13 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
                 )
             st.session_state["prediction_run"] = run
             st.session_state["mosaic_requested"] = False
+            st.session_state["interactive_html_by_timestep"] = {}
+            st.session_state["video_exports"] = {}
         except Exception as exc:
             st.exception(exc)
 
 
-def results_panel(run: PredictionRun) -> None:
+def results_panel(cache_folder: Path, run: PredictionRun) -> None:
     summary = summarize_predictions(run.preds)
     metric_cols = st.columns(4)
     metric_cols[0].metric("Timesteps gardes", len(run.preds))
@@ -277,12 +319,13 @@ def results_panel(run: PredictionRun) -> None:
         value=0,
         step=1,
     )
+    preview = segment_preview(run, timestep)
+    description = describe_timestep(run.preds, timestep=timestep)
     fig_col, info_col = st.columns([1.7, 1.0], gap="large")
     with fig_col:
         fig = render_brain_figure(run.preds, timestep=timestep, vmin=0.5)
         st.pyplot(fig, clear_figure=True, use_container_width=True)
     with info_col:
-        preview = segment_preview(run, timestep)
         st.write(
             {
                 "start": round(float(preview["start"]), 3) if preview["start"] is not None else None,
@@ -293,6 +336,27 @@ def results_panel(run: PredictionRun) -> None:
             st.image(preview["frame"], caption="Frame associee", use_container_width=True)
         if preview["text"]:
             st.text_area("Texte du segment", value=preview["text"], height=160)
+        st.markdown("**Lecture rapide**")
+        st.caption(description["summary"])
+        exp_cols = st.columns(2)
+        exp_cols[0].metric("Lateralite", description["laterality"].capitalize())
+        exp_cols[1].metric("Orientation", description["dorso_ventral"].capitalize())
+        exp_cols = st.columns(2)
+        exp_cols[0].metric("Zone AP", description["antero_posterior"].capitalize())
+        exp_cols[1].metric("Top 1% du signal", f"{description['focus_share']:.1%}")
+
+    with st.expander("Explication", expanded=False):
+        render_reading_guide(
+            input_kind=run.input_kind,
+            timestep=timestep,
+            duration=float(preview["duration"]) if preview["duration"] is not None else None,
+        )
+        st.markdown(
+            "- Utilisez la vue 3D pour tourner autour du cortex et verifier si le foyer est plutot lateral, medial, dorsal ou ventral."
+        )
+        st.markdown(
+            "- Utilisez l'animation MP4 pour voir comment la prediction evolue dans le temps et la rapprocher du texte, de l'audio ou de la video source."
+        )
 
     st.subheader("Exports")
     export_cols = st.columns(3)
@@ -318,18 +382,87 @@ def results_panel(run: PredictionRun) -> None:
         use_container_width=True,
     )
 
-    with st.expander("Figure multi-timesteps", expanded=False):
+    tabs = st.tabs(["3D interactif", "Animation MP4", "Figure multi-timesteps", "Table des evenements"])
+
+    with tabs[0]:
+        html_cache = st.session_state.setdefault("interactive_html_by_timestep", {})
+        if st.button("Generer la scene 3D", use_container_width=True):
+            with st.spinner("Generation de la scene 3D..."):
+                html_cache[timestep] = render_interactive_brain_html(
+                    run.preds,
+                    timestep=timestep,
+                    vmin=0.5,
+                )
+        html = html_cache.get(timestep)
+        if html:
+            components.html(html, height=760, scrolling=False)
+            st.download_button(
+                "Telecharger la scene HTML",
+                data=html.encode("utf-8"),
+                file_name=f"tribev2_timestep_{timestep:03d}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        else:
+            st.caption("Generez la scene pour obtenir un cerveau 3D que vous pouvez tourner librement.")
+
+    with tabs[1]:
+        export_cols = st.columns(2)
+        max_timesteps = export_cols[0].slider(
+            "Timesteps a inclure",
+            min_value=1,
+            max_value=len(run.preds),
+            value=min(15, len(run.preds)),
+        )
+        fps_options = {
+            "1 fps brut": None,
+            "6 fps": 6,
+            "12 fps": 12,
+            "24 fps": 24,
+        }
+        fps_label = export_cols[1].selectbox(
+            "Fluidite",
+            options=list(fps_options),
+            index=2,
+        )
+        export_key = f"{max_timesteps}:{fps_options[fps_label]}"
+        video_cache = st.session_state.setdefault("video_exports", {})
+        if st.button("Generer le MP4", use_container_width=True):
+            with st.spinner("Generation du MP4..."):
+                video_path = export_prediction_video(
+                    run,
+                    output_folder=cache_folder / "exports",
+                    max_timesteps=max_timesteps,
+                    interpolated_fps=fps_options[fps_label],
+                )
+            video_cache[export_key] = str(video_path)
+        video_path_str = video_cache.get(export_key)
+        if video_path_str:
+            video_path = Path(video_path_str)
+            st.video(video_path.read_bytes())
+            st.download_button(
+                "Telecharger le MP4",
+                data=video_path.read_bytes(),
+                file_name=video_path.name,
+                mime="video/mp4",
+                use_container_width=True,
+            )
+        else:
+            st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
+
+    with tabs[2]:
         if st.button("Generer la mosaique", use_container_width=True):
             st.session_state["mosaic_requested"] = True
         if st.session_state.get("mosaic_requested"):
             mosaic = render_prediction_mosaic(run)
             st.pyplot(mosaic, clear_figure=True, use_container_width=True)
 
-    with st.expander("Table des evenements", expanded=False):
+    with tabs[3]:
         st.dataframe(run.events, use_container_width=True, height=320)
 
 
 def main() -> None:
+    configure_runtime_noise()
     apply_theme()
     hero()
     cache_folder = Path(st.sidebar.text_input("Dossier cache", value="./cache"))
@@ -338,7 +471,7 @@ def main() -> None:
 
     run = st.session_state.get("prediction_run")
     if run is not None:
-        results_panel(run)
+        results_panel(cache_folder, run)
 
 
 if __name__ == "__main__":

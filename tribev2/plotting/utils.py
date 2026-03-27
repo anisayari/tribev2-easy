@@ -46,6 +46,11 @@ def get_scalar_mappable(
 ):
     vmin = vmin if vmin is not None else np.nanmin(data)
     vmax = vmax if vmax is not None else np.nanmax(data)
+    if vmin > vmax:
+        vmin = np.nanmin(data)
+        vmax = np.nanmax(data)
+    if np.isclose(vmin, vmax):
+        vmax = vmin + 1e-8
     if symmetric_cbar:
         vmin, vmax = -vmax, vmax
     sm = get_thresholded_sm(vmin, vmax, threshold=threshold, cmap=cmap)
@@ -55,7 +60,7 @@ def get_scalar_mappable(
 def get_thresholded_sm(vmin, vmax, threshold=None, cmap=None):
 
     if cmap is None:
-        cmap = matplotlib.cm.get_cmap("hot")
+        cmap = matplotlib.colormaps.get_cmap("hot")
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     cmaplist = [cmap(i) for i in range(cmap.N)]
 

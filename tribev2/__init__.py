@@ -8,8 +8,11 @@ from tribev2.demo_utils import TribeModel, build_text_events_from_text
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     PredictionRun,
+    describe_timestep,
+    export_prediction_video,
     load_model,
     prepare_events,
+    render_interactive_brain_html,
     resolve_text_model_name,
 )
 
@@ -18,7 +21,10 @@ __all__ = [
     "PredictionRun",
     "TribeModel",
     "build_text_events_from_text",
+    "describe_timestep",
+    "export_prediction_video",
     "load_model",
     "prepare_events",
+    "render_interactive_brain_html",
     "resolve_text_model_name",
 ]

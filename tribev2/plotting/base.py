@@ -437,14 +437,41 @@ class BasePlotBrain(pydantic.BaseModel):
         suptitle=None,
         interpolated_fps=None,
         norm_percentile=100,
+        ffmpeg_bin: str | None = None,
         **plot_kwargs,
     ):
         import subprocess
+        import sys
         from pathlib import Path
+        import shutil as _shutil
 
         import matplotlib.pyplot as plt
         from tqdm import tqdm
 
+        def resolve_ffmpeg() -> str:
+            ffmpeg = ffmpeg_bin or _shutil.which("ffmpeg")
+            if ffmpeg:
+                return ffmpeg
+            env_ffmpeg = Path(sys.executable).parent / "Library" / "bin" / "ffmpeg.exe"
+            if env_ffmpeg.exists():
+                return str(env_ffmpeg)
+            raise FileNotFoundError("ffmpeg executable not found")
+
+        def resolve_video_encoder(ffmpeg_path: str) -> str:
+            result = subprocess.run(
+                [ffmpeg_path, "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            available = result.stdout + result.stderr
+            for encoder in ("libx264", "libopenh264", "mpeg4"):
+                if encoder in available:
+                    return encoder
+            raise RuntimeError("No supported MP4 video encoder found in ffmpeg.")
+
+        ffmpeg_path = resolve_ffmpeg()
+        video_encoder = resolve_video_encoder(ffmpeg_path)
         filepath = Path(filepath)
         tmp_dir = filepath.parent / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -466,7 +493,7 @@ class BasePlotBrain(pydantic.BaseModel):
             out_fig.savefig(tmp_fig, dpi=300)
             plt.close(out_fig)
         cmd = [
-            "ffmpeg",
+            ffmpeg_path,
             "-y",
             "-framerate",
             str(1),
@@ -477,17 +504,22 @@ class BasePlotBrain(pydantic.BaseModel):
             cmd.append("-vf")
             cmd.append(f"minterpolate=fps={interpolated_fps}")
         cmd.extend(
+            ["-c:v", video_encoder]
+        )
+        if video_encoder == "libx264":
+            cmd.extend(["-crf", "18"])
+        elif video_encoder == "libopenh264":
+            cmd.extend(["-b:v", "4M"])
+        else:
+            cmd.extend(["-q:v", "3"])
+        cmd.extend(
             [
-                "-c:v",
-                "libx264",
-                "-crf",
-                "18",
                 "-pix_fmt",
                 "yuv420p",
                 str(filepath),
             ]
         )
-        subprocess.run(cmd)
+        subprocess.run(cmd, check=True)
 
     # ------------------------------------------------------------------
     # Rendering (subclasses must implement)

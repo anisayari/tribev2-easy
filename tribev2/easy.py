@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import os
 from pathlib import Path
 import shutil
@@ -23,7 +24,16 @@ from tribev2.demo_utils import (
     get_audio_and_text_events,
 )
 from tribev2.plotting.cortical import PlotBrainNilearn
-from tribev2.plotting.utils import get_clip, get_text, has_audio, has_video
+from tribev2.plotting.cortical_pv import PlotBrainPyvista
+from tribev2.plotting.utils import (
+    get_clip,
+    get_cmap,
+    get_scalar_mappable,
+    get_text,
+    has_audio,
+    has_video,
+    robust_normalize,
+)
 
 DEFAULT_TEXT_MODEL = "unsloth/Llama-3.2-3B"
 
@@ -36,6 +46,12 @@ class PredictionRun:
     input_kind: str
     source_path: Path | None = None
     raw_text: str | None = None
+
+
+@lru_cache(maxsize=4)
+def get_pyvista_plotter(mesh: str = "fsaverage5") -> PlotBrainPyvista:
+    """Cache the heavier PyVista plotter/mesh backend for dashboard reuse."""
+    return PlotBrainPyvista(mesh=mesh)
 
 
 def resolve_device(device: str = "auto") -> str:
@@ -246,6 +262,197 @@ def render_prediction_mosaic(
     )
     fig.tight_layout()
     return fig
+
+
+def _get_surface_render_data(
+    signal: np.ndarray,
+    *,
+    mesh: str = "fsaverage5",
+    cmap: str = "fire",
+    norm_percentile: int | None = 99,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    threshold: float | None = None,
+    symmetric_cbar: bool = False,
+) -> tuple[PlotBrainPyvista, np.ndarray, np.ndarray, np.ndarray]:
+    plotter = get_pyvista_plotter(mesh)
+    if norm_percentile is not None:
+        signal = robust_normalize(signal, percentile=norm_percentile)
+    mesh_data = plotter._mesh["both"]
+    stat_map = plotter.get_stat_map(signal)["both"]
+    sm = get_scalar_mappable(
+        signal,
+        get_cmap(cmap),
+        vmin=vmin,
+        vmax=vmax,
+        threshold=threshold,
+        symmetric_cbar=symmetric_cbar,
+    )
+    rgba = sm.to_rgba(stat_map)
+    bg_map = mesh_data["bg_map"]
+    bg_norm = (bg_map - bg_map.min()) / (bg_map.max() - bg_map.min() + 1e-8)
+    bg_rgb = 1 - np.column_stack(
+        [plotter.bg_darkness + bg_norm * (1 - plotter.bg_darkness)] * 3
+    )
+    colors = rgba[:, 3:4] * rgba[:, :3] + (1 - rgba[:, 3:4]) * bg_rgb
+    return plotter, mesh_data["coords"], mesh_data["faces"], colors
+
+
+def render_interactive_brain_html(
+    preds: np.ndarray,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    cmap: str = "fire",
+    norm_percentile: int | None = 99,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    threshold: float | None = None,
+    symmetric_cbar: bool = False,
+    width: int = 980,
+    height: int = 700,
+) -> str:
+    """Render one timestep as an interactive PyVista HTML scene."""
+    if timestep < 0 or timestep >= len(preds):
+        raise IndexError(f"Invalid timestep {timestep} for predictions of length {len(preds)}.")
+
+    import pyvista as pv
+
+    _, vertices, faces, colors = _get_surface_render_data(
+        preds[timestep],
+        mesh=mesh,
+        cmap=cmap,
+        norm_percentile=norm_percentile,
+        vmin=vmin,
+        vmax=vmax,
+        threshold=threshold,
+        symmetric_cbar=symmetric_cbar,
+    )
+    pv_faces = np.column_stack([np.full(len(faces), 3), faces]).astype(np.int64)
+    surface = pv.PolyData(vertices, pv_faces)
+    surface.point_data["colors"] = colors
+
+    plotter = pv.Plotter(off_screen=True, window_size=[width, height])
+    plotter.add_mesh(
+        surface,
+        scalars="colors",
+        rgb=True,
+        smooth_shading=True,
+        ambient=0.3,
+    )
+    plotter.set_background("white")
+    plotter.view_vector([-1, 0, 0], viewup=[0, 0, 1])
+    plotter.camera.zoom(1.35)
+    html = plotter.export_html(None).getvalue()
+    plotter.close()
+    return html
+
+
+def export_prediction_video(
+    run: PredictionRun,
+    *,
+    output_folder: str | Path,
+    max_timesteps: int | None = None,
+    mesh: str = "fsaverage5",
+    interpolated_fps: int | None = 12,
+    cmap: str = "fire",
+    norm_percentile: int = 99,
+    vmin: float | None = 0.5,
+) -> Path:
+    """Render a brain prediction animation to MP4."""
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    n_timesteps = len(run.preds) if max_timesteps is None else min(len(run.preds), max_timesteps)
+    fps_tag = interpolated_fps or 1
+    output_path = output_folder / f"tribev2_prediction_{n_timesteps:03d}t_{fps_tag:02d}fps.mp4"
+    plotter = get_pyvista_plotter(mesh)
+    plotter.plot_timesteps_mp4(
+        run.preds[:n_timesteps],
+        filepath=output_path,
+        segments=run.segments[:n_timesteps],
+        interpolated_fps=interpolated_fps,
+        cmap=cmap,
+        norm_percentile=norm_percentile,
+        vmin=vmin,
+    )
+    return output_path
+
+
+def describe_timestep(
+    preds: np.ndarray,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    top_percent: float = 1.0,
+) -> dict[str, tp.Any]:
+    """Summarize where the strongest predicted activity sits on the cortex."""
+    if timestep < 0 or timestep >= len(preds):
+        raise IndexError(f"Invalid timestep {timestep} for predictions of length {len(preds)}.")
+    if not 0 < top_percent <= 100:
+        raise ValueError("top_percent must be within (0, 100].")
+
+    signal = np.asarray(preds[timestep], dtype=float)
+    abs_signal = np.abs(signal)
+    n_vertices = len(abs_signal)
+    k = max(32, int(np.ceil(n_vertices * top_percent / 100)))
+    idx = np.argpartition(abs_signal, -k)[-k:]
+    plotter = get_pyvista_plotter(mesh)
+    coords = plotter._mesh["both"]["coords"]
+    focus_coords = coords[idx]
+    weights = abs_signal[idx]
+    weighted_center = np.average(focus_coords, axis=0, weights=weights)
+    coord_scale = np.maximum(np.max(np.abs(coords), axis=0), 1e-6)
+    x_score, y_score, z_score = weighted_center / coord_scale
+
+    def classify_axis(
+        score: float,
+        negative: str,
+        neutral: str,
+        positive: str,
+        threshold: float = 0.12,
+    ) -> str:
+        if score <= -threshold:
+            return negative
+        if score >= threshold:
+            return positive
+        return neutral
+
+    laterality = classify_axis(
+        x_score,
+        negative="gauche",
+        neutral="bilaterale",
+        positive="droite",
+    )
+    antero_posterior = classify_axis(
+        y_score,
+        negative="posterieure",
+        neutral="centrale",
+        positive="anterieure",
+    )
+    dorso_ventral = classify_axis(
+        z_score,
+        negative="ventrale",
+        neutral="intermediaire",
+        positive="dorsale",
+    )
+    focus_share = float(weights.sum() / max(abs_signal.sum(), 1e-8))
+    mean_abs = float(abs_signal.mean())
+    peak_abs = float(abs_signal.max())
+    summary = (
+        f"Les sommets les plus saillants sont surtout {laterality}, "
+        f"plutot {antero_posterior} et {dorso_ventral}. "
+        f"Le top {top_percent:.1f}% des sommets concentre {focus_share:.1%} "
+        f"de l'amplitude absolue a ce timestep."
+    )
+    return {
+        "laterality": laterality,
+        "antero_posterior": antero_posterior,
+        "dorso_ventral": dorso_ventral,
+        "focus_share": focus_share,
+        "mean_abs": mean_abs,
+        "peak_abs": peak_abs,
+        "summary": summary,
+    }
 
 
 def segment_preview(run: PredictionRun, timestep: int) -> dict[str, tp.Any]:
