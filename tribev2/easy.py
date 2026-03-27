@@ -5,6 +5,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import typing as tp
@@ -36,6 +37,7 @@ from tribev2.plotting.utils import (
 )
 
 DEFAULT_TEXT_MODEL = "unsloth/Llama-3.2-3B"
+VALID_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 @dataclass
@@ -46,6 +48,15 @@ class PredictionRun:
     input_kind: str
     source_path: Path | None = None
     raw_text: str | None = None
+
+
+@dataclass
+class ImageComparisonRun:
+    runs: list[PredictionRun]
+
+    @property
+    def input_kind(self) -> str:
+        return "image"
 
 
 @lru_cache(maxsize=4)
@@ -119,10 +130,13 @@ def prepare_events(
     text_path: str | Path | None = None,
     audio_path: str | Path | None = None,
     video_path: str | Path | None = None,
+    image_path: str | Path | None = None,
     transcribe: bool = False,
     direct_text: bool = True,
     seconds_per_word: float = 0.45,
     max_context_words: int = 128,
+    image_duration: float = 4.0,
+    image_fps: int = 6,
 ) -> tuple[pd.DataFrame, str]:
     """Prepare a standardised events dataframe from one user input."""
     provided = {
@@ -130,11 +144,12 @@ def prepare_events(
         "text_path": text_path,
         "audio_path": audio_path,
         "video_path": video_path,
+        "image_path": image_path,
     }
     active = [name for name, value in provided.items() if value]
     if len(active) != 1:
         raise ValueError(
-            "Exactly one of text, text_path, audio_path or video_path must be provided."
+            "Exactly one of text, text_path, audio_path, video_path or image_path must be provided."
         )
 
     cache_folder = Path(cache_folder)
@@ -158,6 +173,34 @@ def prepare_events(
             ).get_events(),
             "text",
         )
+
+    if image_path is not None:
+        image_path = Path(image_path)
+        if image_path.suffix.lower() not in VALID_IMAGE_SUFFIXES:
+            raise ValueError(
+                f"Unsupported image format '{image_path.suffix}'. "
+                f"Expected one of {sorted(VALID_IMAGE_SUFFIXES)}."
+            )
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Image file does not exist: {image_path}")
+        video_path = build_video_from_image(
+            image_path=image_path,
+            output_folder=cache_folder / "image_clips",
+            duration=image_duration,
+            fps=image_fps,
+        )
+        events = pd.DataFrame(
+            [
+                {
+                    "type": "Video",
+                    "filepath": str(video_path),
+                    "start": 0,
+                    "timeline": "default",
+                    "subject": "default",
+                }
+            ]
+        )
+        return get_audio_and_text_events(events, audio_only=True), "image"
 
     event_type = "Audio" if audio_path is not None else "Video"
     path = Path(audio_path or video_path)  # type: ignore[arg-type]
@@ -233,7 +276,7 @@ def render_brain_figure(
         vmin=vmin,
     )
     fig.suptitle(f"Predicted activity at timestep {timestep}", fontsize=14, y=0.98)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.90, wspace=0.02, hspace=0.02)
     return fig
 
 
@@ -245,7 +288,7 @@ def render_prediction_mosaic(
     show_stimuli: bool = True,
 ) -> plt.Figure:
     """Render a compact multi-timestep figure for the dashboard."""
-    plotter = PlotBrainNilearn(mesh=mesh)
+    plotter = get_pyvista_plotter(mesh)
     n_timesteps = min(max_timesteps, len(run.preds))
     allow_stimuli = False
     if run.segments:
@@ -260,7 +303,6 @@ def render_prediction_mosaic(
         norm_percentile=99,
         vmin=0.5,
     )
-    fig.tight_layout()
     return fig
 
 
@@ -482,6 +524,83 @@ def resolve_ffmpeg() -> str:
     if env_ffmpeg.exists():
         return str(env_ffmpeg)
     raise FileNotFoundError("ffmpeg executable not found")
+
+
+def resolve_video_encoder(ffmpeg_bin: str | None = None) -> str:
+    ffmpeg_bin = ffmpeg_bin or resolve_ffmpeg()
+    result = subprocess.run(
+        [ffmpeg_bin, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    available = result.stdout + result.stderr
+    for encoder in ("libx264", "libopenh264", "mpeg4"):
+        if encoder in available:
+            return encoder
+    raise RuntimeError("No supported MP4 video encoder found in ffmpeg.")
+
+
+def build_video_from_image(
+    *,
+    image_path: str | Path,
+    output_folder: str | Path,
+    duration: float = 4.0,
+    fps: int = 6,
+) -> Path:
+    image_path = Path(image_path)
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    if duration <= 0:
+        raise ValueError("Image clip duration must be strictly positive.")
+    if fps < 1:
+        raise ValueError("Image clip fps must be at least 1.")
+
+    ffmpeg_bin = resolve_ffmpeg()
+    video_encoder = resolve_video_encoder(ffmpeg_bin)
+    safe_stem = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in image_path.stem)
+    output_path = output_folder / f"{safe_stem}_{duration:.2f}s_{fps}fps.mp4"
+    if output_path.exists():
+        return output_path
+
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-loop",
+        "1",
+        "-framerate",
+        str(fps),
+        "-i",
+        str(image_path),
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=mono:sample_rate=16000",
+        "-t",
+        f"{duration:.3f}",
+        "-shortest",
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        "-c:v",
+        video_encoder,
+    ]
+    if video_encoder == "libx264":
+        cmd.extend(["-crf", "18"])
+    elif video_encoder == "libopenh264":
+        cmd.extend(["-b:v", "4M"])
+    else:
+        cmd.extend(["-q:v", "3"])
+    cmd.extend(
+        [
+            "-c:a",
+            "aac",
+            "-pix_fmt",
+            "yuv420p",
+            str(output_path),
+        ]
+    )
+    subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return output_path
 
 
 def write_text_to_temp_file(text: str, folder: str | Path) -> Path:

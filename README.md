@@ -87,6 +87,7 @@ The dashboard supports:
 - Video upload
 - Audio upload
 - Raw text or `.txt` input
+- One image, or comparison of up to two images side by side
 - Local inference
 - Event dataframe inspection
 - Timestep-by-timestep cortical visualization

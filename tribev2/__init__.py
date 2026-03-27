@@ -4,10 +4,32 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"LabelEncoder: event_types has not been set.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+    category=FutureWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"The events dataframe contains an `Index` column.*",
+    category=UserWarning,
+)
+logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
+
 from tribev2.demo_utils import TribeModel, build_text_events_from_text
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
+    ImageComparisonRun,
     PredictionRun,
+    build_video_from_image,
     describe_timestep,
     export_prediction_video,
     load_model,
@@ -18,8 +40,10 @@ from tribev2.easy import (
 
 __all__ = [
     "DEFAULT_TEXT_MODEL",
+    "ImageComparisonRun",
     "PredictionRun",
     "TribeModel",
+    "build_video_from_image",
     "build_text_events_from_text",
     "describe_timestep",
     "export_prediction_video",

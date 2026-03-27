@@ -11,8 +11,41 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
+
+def _apply_warning_filters() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"LabelEncoder: event_types has not been set.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The events dataframe contains an `Index` column.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"LabelEncoder has only found one label.*",
+        category=UserWarning,
+    )
+    logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
+
+
+_apply_warning_filters()
+
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
+    ImageComparisonRun,
     PredictionRun,
     describe_timestep,
     export_prediction_video,
@@ -28,17 +61,7 @@ from tribev2.easy import (
 
 
 def configure_runtime_noise() -> None:
-    warnings.filterwarnings(
-        "ignore",
-        message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"LabelEncoder: event_types has not been set.*",
-        category=UserWarning,
-    )
-    logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
+    _apply_warning_filters()
 
 
 def apply_theme() -> None:
@@ -190,6 +213,21 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             disabled=not uvx_available,
             help="Necessite `uvx whisperx` dans le PATH.",
         )
+        image_duration = st.slider(
+            "Duree clip image",
+            min_value=1.0,
+            max_value=8.0,
+            value=4.0,
+            step=0.5,
+            help="Chaque image est convertie en mini-video statique avant inference.",
+        )
+        image_fps = st.slider(
+            "FPS clip image",
+            min_value=1,
+            max_value=12,
+            value=6,
+            step=1,
+        )
         if not uvx_available:
             st.info("Transcription desactivee: `uvx whisperx` n'est pas installe.")
         st.caption(
@@ -197,7 +235,7 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             "un backbone public non gated compatible avec le codeur texte du projet."
         )
 
-    tabs = st.tabs(["Video", "Audio", "Texte"])
+    tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
     request: dict[str, object] = {}
     with tabs[0]:
         video_file = st.file_uploader(
@@ -226,6 +264,22 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             request["text"] = text_value
         elif text_input.strip():
             request["text"] = text_input
+    with tabs[3]:
+        image_files = st.file_uploader(
+            "Importer jusqu'a 2 images",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            accept_multiple_files=True,
+        )
+        if image_files:
+            selected = image_files[:2]
+            if len(image_files) > 2:
+                st.warning("Seules les 2 premieres images seront utilisees.")
+            image_paths = [save_upload(file, cache_folder / "uploads") for file in selected]
+            request["image_paths"] = image_paths
+            cols = st.columns(len(selected))
+            for col, file in zip(cols, selected):
+                with col:
+                    st.image(file.getvalue(), caption=file.name, width="stretch")
 
     options = {
         "checkpoint": checkpoint,
@@ -236,14 +290,20 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         "direct_text": direct_text,
         "seconds_per_word": seconds_per_word,
         "max_context_words": max_context_words,
+        "image_duration": image_duration,
+        "image_fps": image_fps,
     }
     return request, options
 
 
 def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
-    if st.button("Lancer la prediction", type="primary", use_container_width=True):
+    if st.button("Lancer la prediction", type="primary", width="stretch"):
         if not request:
             st.error("Importez d'abord une video, un audio ou un texte.")
+            return
+        active_inputs = [key for key, value in request.items() if value]
+        if len(active_inputs) != 1:
+            st.error("Choisissez une seule modalite a la fois: video, audio, texte ou images.")
             return
         try:
             with st.spinner("Chargement du modele..."):
@@ -254,28 +314,50 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
                     options["num_workers"],
                     options["text_model_name"],
                 )
-            with st.spinner("Preparation des evenements..."):
-                events, input_kind = prepare_events(
-                    cache_folder=cache_folder,
-                    transcribe=options["transcribe"],
-                    direct_text=options["direct_text"],
-                    seconds_per_word=options["seconds_per_word"],
-                    max_context_words=options["max_context_words"],
-                    **request,
-                )
-            with st.spinner("Inference en cours..."):
-                source_path = next(
-                    (value for key, value in request.items() if key.endswith("_path")),
-                    None,
-                )
-                raw_text = request.get("text")
-                run = predict_from_prepared_events(
-                    model,
-                    events,
-                    input_kind=input_kind,
-                    source_path=Path(source_path) if source_path else None,
-                    raw_text=str(raw_text) if raw_text is not None else None,
-                )
+            if "image_paths" in request:
+                image_paths = [Path(p) for p in request["image_paths"]]
+                image_runs: list[PredictionRun] = []
+                with st.spinner("Preparation des evenements image..."):
+                    for image_path in image_paths:
+                        events, input_kind = prepare_events(
+                            cache_folder=cache_folder,
+                            image_path=image_path,
+                            image_duration=options["image_duration"],
+                            image_fps=options["image_fps"],
+                        )
+                        image_runs.append(
+                            predict_from_prepared_events(
+                                model,
+                                events,
+                                input_kind=input_kind,
+                                source_path=image_path,
+                                verbose=False,
+                            )
+                        )
+                run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
+            else:
+                with st.spinner("Preparation des evenements..."):
+                    events, input_kind = prepare_events(
+                        cache_folder=cache_folder,
+                        transcribe=options["transcribe"],
+                        direct_text=options["direct_text"],
+                        seconds_per_word=options["seconds_per_word"],
+                        max_context_words=options["max_context_words"],
+                        **request,
+                    )
+                with st.spinner("Inference en cours..."):
+                    source_path = next(
+                        (value for key, value in request.items() if key.endswith("_path")),
+                        None,
+                    )
+                    raw_text = request.get("text")
+                    run = predict_from_prepared_events(
+                        model,
+                        events,
+                        input_kind=input_kind,
+                        source_path=Path(source_path) if source_path else None,
+                        raw_text=str(raw_text) if raw_text is not None else None,
+                    )
             st.session_state["prediction_run"] = run
             st.session_state["mosaic_requested"] = False
             st.session_state["interactive_html_by_timestep"] = {}
@@ -284,7 +366,23 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
             st.exception(exc)
 
 
-def results_panel(cache_folder: Path, run: PredictionRun) -> None:
+def render_input_preview(run: PredictionRun) -> None:
+    if run.raw_text:
+        st.text_area("Texte", value=run.raw_text, height=220)
+    elif run.source_path and run.input_kind == "video":
+        st.video(run.source_path.read_bytes())
+    elif run.source_path and run.input_kind == "audio":
+        st.audio(run.source_path.read_bytes())
+    elif run.source_path and run.input_kind == "image":
+        st.image(run.source_path.read_bytes(), caption=run.source_path.name, width="stretch")
+    else:
+        st.caption("Apercu non disponible pour cette entree.")
+
+
+def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -> None:
+    if isinstance(run, ImageComparisonRun):
+        return comparison_results_panel(run)
+
     summary = summarize_predictions(run.preds)
     metric_cols = st.columns(4)
     metric_cols[0].metric("Timesteps gardes", len(run.preds))
@@ -298,18 +396,11 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
         st.line_chart(
             summary.set_index("timestep")[["mean_abs", "std"]],
             height=260,
-            use_container_width=True,
+            width="stretch",
         )
     with preview_col:
         st.subheader("Entree")
-        if run.raw_text:
-            st.text_area("Texte", value=run.raw_text, height=220)
-        elif run.source_path and run.input_kind == "video":
-            st.video(run.source_path.read_bytes())
-        elif run.source_path and run.input_kind == "audio":
-            st.audio(run.source_path.read_bytes())
-        else:
-            st.caption("Apercu non disponible pour cette entree.")
+        render_input_preview(run)
 
     st.subheader("Exploration par timestep")
     timestep = st.slider(
@@ -324,7 +415,7 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
     fig_col, info_col = st.columns([1.7, 1.0], gap="large")
     with fig_col:
         fig = render_brain_figure(run.preds, timestep=timestep, vmin=0.5)
-        st.pyplot(fig, clear_figure=True, use_container_width=True)
+        st.pyplot(fig, clear_figure=True, width="stretch")
     with info_col:
         st.write(
             {
@@ -333,7 +424,7 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
             }
         )
         if preview["frame"] is not None:
-            st.image(preview["frame"], caption="Frame associee", use_container_width=True)
+            st.image(preview["frame"], caption="Frame associee", width="stretch")
         if preview["text"]:
             st.text_area("Texte du segment", value=preview["text"], height=160)
         st.markdown("**Lecture rapide**")
@@ -365,28 +456,28 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
         data=build_npy_download(run.preds),
         file_name="tribev2_predictions.npy",
         mime="application/octet-stream",
-        use_container_width=True,
+        width="stretch",
     )
     export_cols[1].download_button(
         "Events .csv",
         data=run.events.to_csv(index=False).encode("utf-8"),
         file_name="tribev2_events.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
     export_cols[2].download_button(
         "Resume .csv",
         data=summary.to_csv(index=False).encode("utf-8"),
         file_name="tribev2_summary.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
     tabs = st.tabs(["3D interactif", "Animation MP4", "Figure multi-timesteps", "Table des evenements"])
 
     with tabs[0]:
         html_cache = st.session_state.setdefault("interactive_html_by_timestep", {})
-        if st.button("Generer la scene 3D", use_container_width=True):
+        if st.button("Generer la scene 3D", width="stretch"):
             with st.spinner("Generation de la scene 3D..."):
                 html_cache[timestep] = render_interactive_brain_html(
                     run.preds,
@@ -401,7 +492,7 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
                 data=html.encode("utf-8"),
                 file_name=f"tribev2_timestep_{timestep:03d}.html",
                 mime="text/html",
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.caption("Generez la scene pour obtenir un cerveau 3D que vous pouvez tourner librement.")
@@ -427,7 +518,7 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
         )
         export_key = f"{max_timesteps}:{fps_options[fps_label]}"
         video_cache = st.session_state.setdefault("video_exports", {})
-        if st.button("Generer le MP4", use_container_width=True):
+        if st.button("Generer le MP4", width="stretch"):
             with st.spinner("Generation du MP4..."):
                 video_path = export_prediction_video(
                     run,
@@ -445,20 +536,55 @@ def results_panel(cache_folder: Path, run: PredictionRun) -> None:
                 data=video_path.read_bytes(),
                 file_name=video_path.name,
                 mime="video/mp4",
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
 
     with tabs[2]:
-        if st.button("Generer la mosaique", use_container_width=True):
+        if st.button("Generer la mosaique", width="stretch"):
             st.session_state["mosaic_requested"] = True
         if st.session_state.get("mosaic_requested"):
             mosaic = render_prediction_mosaic(run)
-            st.pyplot(mosaic, clear_figure=True, use_container_width=True)
+            st.pyplot(mosaic, clear_figure=True, width="stretch")
 
     with tabs[3]:
-        st.dataframe(run.events, use_container_width=True, height=320)
+        st.dataframe(run.events, width="stretch", height=320)
+
+
+def comparison_results_panel(run: ImageComparisonRun) -> None:
+    st.subheader("Comparaison d'images")
+    common_timesteps = min(len(item.preds) for item in run.runs)
+    timestep = st.slider(
+        "Choisir un timestep commun",
+        min_value=0,
+        max_value=common_timesteps - 1,
+        value=0,
+        step=1,
+        key="image_compare_timestep",
+    )
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Images", len(run.runs))
+    metric_cols[1].metric("Timesteps communs", common_timesteps)
+    metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
+    metric_cols[3].metric("Modalite", "Images")
+
+    cols = st.columns(len(run.runs), gap="large")
+    for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
+        with col:
+            st.markdown(f"**Image {idx}**")
+            render_input_preview(item)
+            fig = render_brain_figure(item.preds, timestep=timestep, vmin=0.5)
+            st.pyplot(fig, clear_figure=True, width="stretch")
+            description = describe_timestep(item.preds, timestep=timestep)
+            st.caption(description["summary"])
+            st.download_button(
+                f"Predictions image {idx}",
+                data=build_npy_download(item.preds),
+                file_name=f"tribev2_image_{idx}_predictions.npy",
+                mime="application/octet-stream",
+                width="stretch",
+            )
 
 
 def main() -> None:

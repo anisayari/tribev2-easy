@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from tribev2.demo_utils import build_text_events_from_text
+from tribev2 import easy as easy_module
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     describe_timestep,
@@ -51,3 +53,27 @@ def test_describe_timestep_returns_readable_summary():
     assert description["laterality"] in {"gauche", "droite", "bilaterale"}
     assert description["focus_share"] > 0
     assert "Les sommets les plus saillants" in description["summary"]
+
+
+def test_prepare_events_supports_single_image(tmp_path: Path, monkeypatch):
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (48, 32), color=(220, 80, 40)).save(image_path)
+    generated_video = tmp_path / "sample.mp4"
+    generated_video.write_bytes(b"fake")
+
+    monkeypatch.setattr(
+        easy_module,
+        "build_video_from_image",
+        lambda **kwargs: generated_video,
+    )
+    monkeypatch.setattr(
+        easy_module,
+        "get_audio_and_text_events",
+        lambda events, audio_only=False: events,
+    )
+
+    events, input_kind = prepare_events(cache_folder=tmp_path, image_path=image_path)
+
+    assert input_kind == "image"
+    assert events.iloc[0]["type"] == "Video"
+    assert events.iloc[0]["filepath"] == str(generated_video)
