@@ -16,7 +16,24 @@
 
 TRIBE v2 is a multimodal brain-encoding model that predicts fMRI activity from video, audio, and text. It combines large pretrained encoders for language, vision, and audition, then maps those features to cortical activity on the `fsaverage5` surface.
 
-This fork keeps the original research code, adds Windows-friendly inference fixes, supports modern Blackwell GPUs through newer PyTorch builds, and includes a packaged local dashboard for easier day-to-day use.
+## Why Easy?
+
+The original repository is research-first. It is great if you want the paper code and the notebook flow, but it is less convenient for day-to-day local use on a Windows workstation, a recent NVIDIA GPU, or a small internal demo setup.
+
+This fork keeps the original TRIBE v2 codebase, then adds a cleaner local workflow around it: easier install, easier inference, a packaged dashboard, and a few practical input paths that make the model faster to try on your own data.
+
+## What's Changed in This Fork?
+
+- Windows-friendly fixes for local inference and model loading
+- Support for newer PyTorch builds so TRIBE can run on Blackwell GPUs such as the RTX 5090
+- Public default text backbone: [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) instead of the gated Meta Llama repo
+- Packaged Streamlit dashboard with local upload, prediction, export, and visualization flow
+- Direct text mode without the original TTS + ASR round-trip
+- Static image support, including side-by-side comparison for up to two images
+- Interactive 3D cortical viewer in the browser
+- MP4 export of prediction dynamics over time
+- Built-in explanation panels in the dashboard, with notes grounded in the paper, the official notebook, and the Meta blog post
+- Safer local plotting and ffmpeg handling for the packaged demo workflow
 
 ## Quick start
 
