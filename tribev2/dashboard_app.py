@@ -4,6 +4,7 @@ import io
 import logging
 from pathlib import Path
 import shutil
+import typing as tp
 import uuid
 import warnings
 
@@ -47,6 +48,8 @@ from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     ImageComparisonRun,
     PredictionRun,
+    build_explainability_report,
+    build_image_comparison_guide,
     describe_timestep,
     export_prediction_video,
     load_model,
@@ -153,24 +156,20 @@ def build_npy_download(preds: np.ndarray) -> bytes:
     return buffer.getvalue()
 
 
-def render_reading_guide(
-    *,
-    input_kind: str,
-    timestep: int,
-    duration: float | None,
-) -> None:
-    st.markdown("**Comment lire cette carte**")
-    notes = [
-        "La surface affiche le cortex sur le maillage `fsaverage5`, pas un cerveau individuel.",
-        "Les couleurs chaudes indiquent une reponse predite plus forte a ce timestep.",
-        "Ce signal est une prediction du modele TRIBE, pas une mesure fMRI reelle.",
-    ]
-    if duration is not None:
-        notes.append(
-            f"Le timestep {timestep} couvre environ {duration:.2f}s du stimulus {input_kind}."
-        )
-    for note in notes:
-        st.markdown(f"- {note}")
+def render_source_links(sources: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> None:
+    links = [f"[{label}]({url})" for label, url in sources]
+    st.caption("Sources: " + " | ".join(links))
+
+
+def render_explainability_report(report: dict[str, object]) -> None:
+    title = str(report.get("title", "Explication"))
+    st.markdown(f"**{title}**")
+    for section in report.get("sections", []):
+        section_dict = tp.cast(dict[str, object], section)
+        st.markdown(f"**{section_dict['title']}**")
+        for bullet in tp.cast(list[str], section_dict["bullets"]):
+            st.markdown(f"- {bullet}")
+    render_source_links(tp.cast(list[tuple[str, str]], report.get("sources", [])))
 
 
 def input_panel(cache_folder: Path) -> tuple[dict, dict]:
@@ -437,17 +436,15 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         exp_cols[1].metric("Top 1% du signal", f"{description['focus_share']:.1%}")
 
     with st.expander("Explication", expanded=False):
-        render_reading_guide(
-            input_kind=run.input_kind,
+        report = build_explainability_report(
+            run,
             timestep=timestep,
             duration=float(preview["duration"]) if preview["duration"] is not None else None,
+            description=description,
         )
-        st.markdown(
-            "- Utilisez la vue 3D pour tourner autour du cortex et verifier si le foyer est plutot lateral, medial, dorsal ou ventral."
-        )
-        st.markdown(
-            "- Utilisez l'animation MP4 pour voir comment la prediction evolue dans le temps et la rapprocher du texte, de l'audio ou de la video source."
-        )
+        render_explainability_report(report)
+        st.markdown("- Utilisez la vue 3D pour tourner autour du cortex et verifier si le foyer est plutot lateral, medial, dorsal ou ventral.")
+        st.markdown("- Utilisez l'animation MP4 pour voir comment la prediction evolue dans le temps et la rapprocher du texte, de l'audio ou de la video source.")
 
     st.subheader("Exports")
     export_cols = st.columns(3)
@@ -568,16 +565,35 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
     metric_cols[1].metric("Timesteps communs", common_timesteps)
     metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
     metric_cols[3].metric("Modalite", "Images")
+    descriptions = [describe_timestep(item.preds, timestep=timestep) for item in run.runs]
+
+    with st.expander("Explication", expanded=False):
+        guide = build_image_comparison_guide(
+            run,
+            timestep=timestep,
+            descriptions=descriptions,
+        )
+        st.markdown(f"**{guide['title']}**")
+        for bullet in guide["bullets"]:
+            st.markdown(f"- {bullet}")
+        render_source_links(guide["sources"])
 
     cols = st.columns(len(run.runs), gap="large")
-    for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
+    for idx, (col, item, description) in enumerate(zip(cols, run.runs, descriptions), start=1):
         with col:
             st.markdown(f"**Image {idx}**")
             render_input_preview(item)
             fig = render_brain_figure(item.preds, timestep=timestep, vmin=0.5)
             st.pyplot(fig, clear_figure=True, width="stretch")
-            description = describe_timestep(item.preds, timestep=timestep)
             st.caption(description["summary"])
+            with st.expander(f"Pourquoi l'image {idx} genere cette carte", expanded=False):
+                render_explainability_report(
+                    build_explainability_report(
+                        item,
+                        timestep=timestep,
+                        description=description,
+                    )
+                )
             st.download_button(
                 f"Predictions image {idx}",
                 data=build_npy_download(item.preds),

@@ -7,6 +7,10 @@ from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
+    ImageComparisonRun,
+    PredictionRun,
+    build_explainability_report,
+    build_image_comparison_guide,
     describe_timestep,
     prepare_events,
     resolve_text_model_name,
@@ -77,3 +81,113 @@ def test_prepare_events_supports_single_image(tmp_path: Path, monkeypatch):
     assert input_kind == "image"
     assert events.iloc[0]["type"] == "Video"
     assert events.iloc[0]["filepath"] == str(generated_video)
+
+
+def test_build_explainability_report_for_direct_text_mentions_fork_shortcut():
+    events = build_text_events_from_text("Simple local text example.", seconds_per_word=0.5)
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :64] = 1.0
+    run = PredictionRun(
+        events=events,
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="Simple local text example.",
+    )
+
+    report = build_explainability_report(
+        run,
+        timestep=0,
+        description={
+            "summary": "resume test",
+            "laterality": "gauche",
+            "antero_posterior": "centrale",
+            "dorso_ventral": "dorsale",
+            "focus_share": 0.2,
+            "mean_abs": 0.1,
+            "peak_abs": 1.0,
+        },
+    )
+
+    bullets = " ".join(
+        bullet
+        for section in report["sections"]
+        for bullet in section["bullets"]
+    )
+    assert "Texte direct" in bullets
+    assert "timings synthetiques" in bullets
+
+
+def test_build_explainability_report_for_image_mentions_static_clip(tmp_path: Path):
+    events = np.array([])
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :64] = 1.0
+    run = PredictionRun(
+        events=easy_module.pd.DataFrame([{"type": "Video"}]),
+        preds=preds,
+        segments=[],
+        input_kind="image",
+        source_path=tmp_path / "sample.png",
+    )
+
+    report = build_explainability_report(
+        run,
+        timestep=0,
+        description={
+            "summary": "resume test",
+            "laterality": "gauche",
+            "antero_posterior": "centrale",
+            "dorso_ventral": "dorsale",
+            "focus_share": 0.2,
+            "mean_abs": 0.1,
+            "peak_abs": 1.0,
+        },
+    )
+
+    bullets = " ".join(
+        bullet
+        for section in report["sections"]
+        for bullet in section["bullets"]
+    )
+    assert "clip video silencieux" in bullets
+    assert "ajout de ce fork" in bullets
+
+
+def test_build_image_comparison_guide_mentions_both_images():
+    preds = np.zeros((2, 20484), dtype=float)
+    events = build_text_events_from_text("placeholder")
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="image"),
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="image"),
+        ]
+    )
+
+    guide = build_image_comparison_guide(
+        run,
+        timestep=0,
+        descriptions=[
+            {
+                "laterality": "gauche",
+                "antero_posterior": "posterieure",
+                "dorso_ventral": "dorsale",
+                "summary": "",
+                "focus_share": 0.2,
+                "mean_abs": 0.1,
+                "peak_abs": 1.0,
+            },
+            {
+                "laterality": "droite",
+                "antero_posterior": "anterieure",
+                "dorso_ventral": "ventrale",
+                "summary": "",
+                "focus_share": 0.2,
+                "mean_abs": 0.1,
+                "peak_abs": 1.0,
+            },
+        ],
+    )
+
+    text = " ".join(guide["bullets"])
+    assert "image 1" in text
+    assert "image 2" in text

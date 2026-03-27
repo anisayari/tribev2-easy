@@ -59,6 +59,22 @@ class ImageComparisonRun:
         return "image"
 
 
+EXPLAINABILITY_SOURCES: tuple[tuple[str, str], ...] = (
+    (
+        "Meta AI blog (2026-03-26)",
+        "https://ai.meta.com/blog/tribe-v2-brain-predictive-foundation-model/",
+    ),
+    (
+        "Meta AI publication (2026-03-26)",
+        "https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/",
+    ),
+    (
+        "Official demo notebook",
+        "https://github.com/facebookresearch/tribev2/blob/main/tribe_demo.ipynb",
+    ),
+)
+
+
 @lru_cache(maxsize=4)
 def get_pyvista_plotter(mesh: str = "fsaverage5") -> PlotBrainPyvista:
     """Cache the heavier PyVista plotter/mesh backend for dashboard reuse."""
@@ -249,6 +265,25 @@ def summarize_predictions(preds: np.ndarray) -> pd.DataFrame:
             "max_abs": np.abs(preds).max(axis=1),
         }
     )
+
+
+def list_run_channels(run: PredictionRun) -> list[str]:
+    """Describe which signal channels are represented in the prepared events."""
+    channels: list[str] = []
+    event_types = {str(value).strip().lower() for value in run.events.get("type", pd.Series(dtype=object)).dropna()}
+    if run.input_kind == "image":
+        return ["image statique", "clip video synthetique"]
+    if run.input_kind == "text":
+        return ["texte aligne"]
+    if "video" in event_types or run.input_kind == "video":
+        channels.append("video")
+    if "audio" in event_types or run.input_kind == "audio":
+        channels.append("audio")
+    if {"word", "text"} & event_types or run.raw_text:
+        channels.append("texte aligne")
+    if not channels:
+        channels.append(run.input_kind)
+    return channels
 
 
 def render_brain_figure(
@@ -494,6 +529,152 @@ def describe_timestep(
         "mean_abs": mean_abs,
         "peak_abs": peak_abs,
         "summary": summary,
+    }
+
+
+def build_explainability_report(
+    run: PredictionRun,
+    *,
+    timestep: int,
+    duration: float | None = None,
+    description: dict[str, tp.Any] | None = None,
+) -> dict[str, tp.Any]:
+    """Build a source-backed explanation for one run and timestep."""
+    description = description or describe_timestep(run.preds, timestep=timestep)
+    channels = list_run_channels(run)
+    channel_text = ", ".join(channels)
+    shared_section = {
+        "title": "Ce que TRIBE v2 fait ici",
+        "bullets": [
+            "Le papier et le billet Meta presentent TRIBE v2 comme un modele tri-modal vision/audio/langage qui predit une reponse corticale, pas une pensee decodee ni un diagnostic.",
+            "La publication indique plus de 1 000 heures de fMRI sur 720 sujets; le billet parle de plus de 700 volontaires sains et met en avant un gain de resolution d'environ 70x par rapport a des modeles similaires anterieurs.",
+            f"Pour cette entree, le pipeline exploite surtout: {channel_text}.",
+        ],
+    }
+    reading_bullets = [
+        "La surface affiche `fsaverage5`, donc un cortex de reference partage, pas un cerveau individuel.",
+        "Les couleurs chaudes indiquent ici une reponse predite plus forte a ce timestep.",
+        description["summary"],
+    ]
+    if duration is not None:
+        reading_bullets.append(
+            f"Le timestep {timestep} couvre environ {duration:.2f}s du stimulus prepare."
+        )
+    reading_section = {
+        "title": "Comment lire cette carte",
+        "bullets": reading_bullets,
+    }
+
+    if run.input_kind == "video":
+        modality_section = {
+            "title": "Pourquoi cette video est interpretable",
+            "bullets": [
+                "Le notebook officiel decompose une video en indices visuels, audio et textuels alignes dans le temps, puis le modele predit une carte corticale a chaque seconde environ.",
+                "Le notebook cite des extracteurs distincts pour la vision, l'audio et le texte, ensuite fusionnes par un Transformer commun avant la prediction sur le cortex.",
+                "Sur une video, les changements de carte viennent souvent d'un melange entre changement de scene, variation sonore et contenu verbal au meme timestep.",
+            ],
+        }
+        limits_section = {
+            "title": "Limites",
+            "bullets": [
+                "Cette carte estime une reponse moyenne plausible selon le modele, pas l'activite mesuree d'un sujet reel.",
+                "Une zone plus chaude n'implique pas a elle seule une interpretation cognitive unique; plusieurs indices sensoriels peuvent contribuer en meme temps.",
+            ],
+        }
+    elif run.input_kind == "audio":
+        has_text_alignment = "texte aligne" in channels
+        modality_section = {
+            "title": "Pourquoi cet audio est interpretable",
+            "bullets": [
+                "TRIBE v2 inclut explicitement l'audition parmi ses trois modalites; sur un fichier audio, la carte reflete surtout la structure sonore et, si disponible, les mots alignes.",
+                (
+                    "Cette execution contient aussi un canal textuel aligne, donc les mots peuvent aider a expliquer certaines variations temporelles."
+                    if has_text_alignment
+                    else "Cette execution fonctionne sans transcription obligatoire; la prediction repose alors principalement sur le contenu acoustique."
+                ),
+                "Le plus utile est de rapprocher chaque pic temporel d'un changement de rythme, d'intonation, de timbre ou de parole.",
+            ],
+        }
+        limits_section = {
+            "title": "Limites",
+            "bullets": [
+                "Sans transcription alignee, l'explication reste surtout acoustique et moins semantique.",
+                "Le modele simule une reponse corticale probable; il ne localise pas de maniere definitive une fonction cerebrale humaine.",
+            ],
+        }
+    elif run.input_kind == "text":
+        direct_text = run.raw_text is not None and "texte aligne" in channels and "audio" not in channels
+        modality_section = {
+            "title": "Pourquoi ce texte est interpretable",
+            "bullets": [
+                "Le notebook officiel indique que la branche texte passe par le codeur langage du modele et que les predictions sont emises sur le cortex au fil d'une timeline alignee.",
+                (
+                    "Dans le notebook officiel, le texte est converti en parole puis retranscrit pour retrouver des timings de mots, car le modele a ete entraine sur des stimuli naturalistes audio/video."
+                    if not direct_text
+                    else "Dans ce fork, le mode `Texte direct` cree des timings synthetiques par mot pour rendre l'usage local plus simple; c'est un raccourci pratique, distinct de la demarche exacte du notebook."
+                ),
+                "Quand vous lisez la carte, reliez les changements de signal a l'arrivee de nouveaux mots, a la densite du contexte et aux ruptures de phrase.",
+            ],
+        }
+        limits_section = {
+            "title": "Limites",
+            "bullets": [
+                "En mode texte direct, les timings sont artificiels: ils servent a piloter le modele localement, pas a reproduire une presentation experimentale reelle.",
+                "La carte reste une prediction de reponse cerebrale plausible a partir du texte, pas une preuve qu'une region code uniquement ce contenu semantique.",
+            ],
+        }
+    else:
+        modality_section = {
+            "title": "Pourquoi cette image est interpretable",
+            "bullets": [
+                "Le billet Meta insiste sur la capacite du modele a predire des reponses a ce que le cerveau voit; cette branche de votre fork reutilise donc la voie visuelle du modele.",
+                "Techniquement, une image statique est convertie ici en court clip video silencieux pour alimenter le pipeline du projet sans changer les poids du modele.",
+                "Si la carte reste stable entre plusieurs timesteps, cela signifie surtout que le contenu visuel fixe domine; les petites variations restantes viennent du fenetrage temporel du pipeline, pas d'une nouvelle scene.",
+            ],
+        }
+        limits_section = {
+            "title": "Limites",
+            "bullets": [
+                "Le support des images statiques est un ajout de ce fork; ce n'est pas le protocole principal mis en avant dans le notebook officiel.",
+                "Comme l'image est repetee dans le temps, il faut interpreter les differences temporelles avec prudence et se concentrer surtout sur le patron spatial global.",
+            ],
+        }
+
+    return {
+        "title": f"Explication {run.input_kind}",
+        "sections": [shared_section, modality_section, reading_section, limits_section],
+        "sources": EXPLAINABILITY_SOURCES,
+    }
+
+
+def build_image_comparison_guide(
+    run: ImageComparisonRun,
+    *,
+    timestep: int,
+    descriptions: list[dict[str, tp.Any]] | None = None,
+) -> dict[str, tp.Any]:
+    """Explain how to compare two static-image predictions."""
+    descriptions = descriptions or [
+        describe_timestep(item.preds, timestep=timestep) for item in run.runs
+    ]
+    bullets = [
+        "Les deux images passent par le meme pipeline visuel et le meme maillage cortical, donc la comparaison est surtout spatiale.",
+        "Comparez d'abord la lateralite, l'axe antero-posterieur, l'axe dorso-ventral et la concentration du top 1% du signal.",
+        "Comme chaque image est transformee en clip silencieux statique dans ce fork, les differences entre colonnes viennent du contenu visuel, pas d'un changement de son ou de scene.",
+    ]
+    if len(descriptions) >= 2:
+        left = descriptions[0]
+        right = descriptions[1]
+        bullets.append(
+            "Au timestep observe, l'image 1 est surtout "
+            f"{left['laterality']}, {left['antero_posterior']} et {left['dorso_ventral']}; "
+            "l'image 2 est surtout "
+            f"{right['laterality']}, {right['antero_posterior']} et {right['dorso_ventral']}."
+        )
+    return {
+        "title": "Comment comparer ces images",
+        "bullets": bullets,
+        "sources": EXPLAINABILITY_SOURCES,
     }
 
 
