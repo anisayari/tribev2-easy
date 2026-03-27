@@ -94,12 +94,7 @@ The dashboard supports:
 
 ## Practical notes
 
-- Text predictions use the gated [LLaMA 3.2-3B](https://huggingface.co/meta-llama/Llama-3.2-3B) encoder. You may need a Hugging Face token:
-
-```bash
-huggingface-cli login
-```
-
+- The packaged dashboard defaults to the public [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) text backbone, which avoids the gated Meta repo.
 - Audio transcription still requires `uvx whisperx` if you enable ASR in the pipeline or dashboard.
 - For NVIDIA Blackwell GPUs such as the RTX 5090, use a PyTorch build with CUDA 12.8+ and Blackwell support, such as `torch 2.7.x` or newer.
 

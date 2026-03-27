@@ -9,6 +9,7 @@ import numpy as np
 import streamlit as st
 
 from tribev2.easy import (
+    DEFAULT_TEXT_MODEL,
     PredictionRun,
     load_model,
     predict_from_prepared_events,
@@ -82,12 +83,14 @@ def get_model(
     cache_folder: str,
     device: str,
     num_workers: int,
+    text_model_name: str,
 ) -> object:
     return load_model(
         checkpoint=checkpoint,
         cache_folder=cache_folder,
         device=device,
         num_workers=num_workers,
+        text_model_name=text_model_name,
     )
 
 
@@ -121,6 +124,11 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             step=1,
             help="0 est la valeur la plus sure pour Windows et Streamlit.",
         )
+        text_model_name = st.text_input(
+            "Modele texte",
+            value=DEFAULT_TEXT_MODEL,
+            help="Repo Hugging Face public ou chemin local au format transformers.",
+        )
         direct_text = st.checkbox("Texte direct (sans TTS/ASR)", value=True)
         seconds_per_word = st.slider(
             "Duree synthetique par mot (texte direct)",
@@ -145,8 +153,8 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         if not uvx_available:
             st.info("Transcription desactivee: `uvx whisperx` n'est pas installe.")
         st.caption(
-            "Le mode texte utilise le codeur LLaMA 3.2 du projet. "
-            "Un login Hugging Face peut etre necessaire selon votre acces."
+            "Le dashboard utilise par defaut `unsloth/Llama-3.2-3B`, "
+            "un backbone public non gated compatible avec le codeur texte du projet."
         )
 
     tabs = st.tabs(["Video", "Audio", "Texte"])
@@ -183,6 +191,7 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         "checkpoint": checkpoint,
         "device": device,
         "num_workers": int(num_workers),
+        "text_model_name": text_model_name,
         "transcribe": transcribe,
         "direct_text": direct_text,
         "seconds_per_word": seconds_per_word,
@@ -203,6 +212,7 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
                     str(cache_folder),
                     options["device"],
                     options["num_workers"],
+                    options["text_model_name"],
                 )
             with st.spinner("Preparation des evenements..."):
                 events, input_kind = prepare_events(

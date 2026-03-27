@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from tribev2.demo_utils import build_text_events_from_text
-from tribev2.easy import prepare_events
+from tribev2.easy import DEFAULT_TEXT_MODEL, prepare_events, resolve_text_model_name
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -29,3 +29,7 @@ def test_prepare_events_supports_direct_text(tmp_path: Path):
     assert input_kind == "text"
     assert not events.empty
     assert set(events.type.unique()) == {"Word"}
+
+
+def test_resolve_text_model_name_defaults_to_public_repo():
+    assert resolve_text_model_name() == DEFAULT_TEXT_MODEL

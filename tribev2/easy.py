@@ -25,6 +25,8 @@ from tribev2.demo_utils import (
 from tribev2.plotting.cortical import PlotBrainNilearn
 from tribev2.plotting.utils import get_clip, get_text, has_audio, has_video
 
+DEFAULT_TEXT_MODEL = "unsloth/Llama-3.2-3B"
+
 
 @dataclass
 class PredictionRun:
@@ -51,12 +53,24 @@ def resolve_device(device: str = "auto") -> str:
     return device
 
 
+def resolve_text_model_name(text_model_name: str | None = None) -> str:
+    """Resolve the text backbone used by the TRIBE text extractor."""
+    candidate = text_model_name or os.environ.get("TRIBEV2_TEXT_MODEL")
+    if candidate is None:
+        candidate = DEFAULT_TEXT_MODEL
+    candidate = str(candidate).strip()
+    if not candidate:
+        raise ValueError("Text model name must not be empty.")
+    return candidate
+
+
 def load_model(
     *,
     checkpoint: str = "facebook/tribev2",
     cache_folder: str | Path = "./cache",
     device: str = "auto",
     num_workers: int = 0,
+    text_model_name: str | None = None,
     config_update: dict | None = None,
 ) -> TribeModel:
     """Load TRIBE with settings that are safe for local dashboard usage."""
@@ -65,6 +79,15 @@ def load_model(
     merged_update = {"data.num_workers": int(num_workers)}
     if config_update:
         merged_update.update(config_update)
+    if text_model_name is None:
+        merged_update.setdefault(
+            "data.text_feature.model_name",
+            resolve_text_model_name(),
+        )
+    else:
+        merged_update["data.text_feature.model_name"] = resolve_text_model_name(
+            text_model_name
+        )
     return TribeModel.from_pretrained(
         checkpoint,
         cache_folder=cache_folder,
