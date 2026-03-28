@@ -5,11 +5,13 @@ from functools import lru_cache
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import typing as tp
+import unicodedata
 
 import matplotlib
 matplotlib.use("Agg")
@@ -75,6 +77,44 @@ EXPLAINABILITY_SOURCES: tuple[tuple[str, str], ...] = (
         "https://github.com/facebookresearch/tribev2/blob/main/tribe_demo.ipynb",
     ),
 )
+
+VALENCE_CUE_LEXICON: dict[str, set[str]] = {
+    "positive": {
+        "good", "great", "joy", "happy", "love", "safe", "calm", "hope", "beautiful",
+        "success", "excited", "wonderful", "bien", "heureux", "heureuse", "joie",
+        "amour", "calme", "espoir", "belle", "beau", "positif", "positive",
+    },
+    "negative": {
+        "bad", "sad", "hate", "pain", "danger", "death", "violent", "loss", "cry",
+        "terrible", "awful", "mal", "triste", "haine", "douleur", "danger", "mort",
+        "violent", "perte", "pleure", "negatif", "negative",
+    },
+    "joy": {
+        "joy", "happy", "delight", "smile", "laugh", "celebrate", "relief", "fun",
+        "joie", "heureux", "heureuse", "sourire", "rire", "celebre", "soulagement",
+    },
+    "fear": {
+        "fear", "afraid", "scared", "terror", "panic", "threat", "danger", "worry",
+        "worried", "anxiety", "anxious", "peur", "effraye", "terrifie", "panique",
+        "menace", "inquiet", "inquiete", "anxiete",
+    },
+    "desire": {
+        "want", "need", "wish", "hope", "desire", "crave", "longing", "dream",
+        "envie", "veux", "veut", "vouloir", "besoin", "souhaite", "desir", "reve",
+    },
+    "anger": {
+        "anger", "angry", "rage", "furious", "hate", "fight", "attack", "mad",
+        "colere", "furieux", "rage", "haine", "attaque", "frappe",
+    },
+    "sadness": {
+        "sad", "grief", "cry", "tears", "lonely", "loss", "mourning",
+        "triste", "chagrin", "pleure", "larmes", "seul", "perte", "deuil",
+    },
+    "calm": {
+        "calm", "quiet", "peace", "soft", "slow", "rest", "gentle",
+        "calme", "paisible", "doux", "douce", "lent", "lente", "repos",
+    },
+}
 
 
 @lru_cache(maxsize=4)
@@ -286,6 +326,191 @@ def list_run_channels(run: PredictionRun) -> list[str]:
     if not channels:
         channels.append(run.input_kind)
     return channels
+
+
+def normalize_text_for_cues(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
+    return re.findall(r"[a-z']+", normalized)
+
+
+def infer_affective_cues(text: str | None) -> dict[str, tp.Any]:
+    """Estimate coarse valence/emotion cues from stimulus text, not from the map alone."""
+    if not text or not text.strip():
+        return {
+            "available": False,
+            "valence": "indeterminee",
+            "emotions": [],
+            "evidence": [],
+            "summary": "Pas assez de contenu textuel pour estimer une valence ou une emotion.",
+        }
+
+    tokens = normalize_text_for_cues(text)
+    if not tokens:
+        return {
+            "available": False,
+            "valence": "indeterminee",
+            "emotions": [],
+            "evidence": [],
+            "summary": "Le texte du segment ne contient pas assez d'indices lexicaux exploitables.",
+        }
+
+    scores = {
+        name: sum(token in lexicon for token in tokens)
+        for name, lexicon in VALENCE_CUE_LEXICON.items()
+    }
+    evidence = sorted(
+        {
+            token
+            for token in tokens
+            if any(token in lexicon for lexicon in VALENCE_CUE_LEXICON.values())
+        }
+    )
+    positive_score = scores["positive"] + scores["joy"] + scores["calm"] + max(scores["desire"] - 1, 0)
+    negative_score = scores["negative"] + scores["fear"] + scores["anger"] + scores["sadness"]
+    if positive_score == 0 and negative_score == 0:
+        valence = "indeterminee"
+    elif positive_score >= negative_score * 1.5:
+        valence = "plutot positive"
+    elif negative_score >= positive_score * 1.5:
+        valence = "plutot negative"
+    else:
+        valence = "mixte"
+
+    emotion_scores = {
+        key: scores[key]
+        for key in ("joy", "fear", "desire", "anger", "sadness", "calm")
+        if scores[key] > 0
+    }
+    emotions = [key for key, _ in sorted(emotion_scores.items(), key=lambda item: (-item[1], item[0]))[:2]]
+    if emotions:
+        summary = (
+            f"Le texte du segment suggere une valence {valence}. "
+            f"Indices emotionnels dominants: {', '.join(emotions)}."
+        )
+    else:
+        summary = (
+            "Le texte du segment n'apporte pas assez d'indices lexicaux pour "
+            "isoler une emotion dominante, meme si une valence globale peut etre suggeree."
+        )
+    return {
+        "available": bool(emotions or valence != "indeterminee"),
+        "valence": valence,
+        "emotions": emotions,
+        "evidence": evidence[:8],
+        "summary": summary,
+    }
+
+
+def infer_region_profile(
+    description: dict[str, tp.Any],
+    *,
+    input_kind: str,
+) -> dict[str, tp.Any]:
+    """Translate coarse spatial axes into conservative functional hypotheses."""
+    ap = description["antero_posterior"]
+    dv = description["dorso_ventral"]
+    lat = description["laterality"]
+
+    if ap == "posterieure":
+        if dv == "dorsale":
+            zone = "cortex occipito-parietal dorsal"
+            systems = ["vision spatiale", "mouvement visuel", "attention visuo-spatiale"]
+        elif dv == "ventrale":
+            zone = "cortex occipito-temporal ventral"
+            systems = ["voie visuelle ventrale", "formes, objets, scenes ou visages"]
+        else:
+            zone = "cortex occipital posterieur"
+            systems = ["traitement visuel precoce", "structure globale de l'image ou de la scene"]
+    elif ap == "centrale":
+        if dv == "dorsale":
+            zone = "cortex parietal dorsal"
+            systems = ["attention", "integration multisensorielle", "coordination perception-action"]
+        elif dv == "ventrale":
+            zone = "cortex temporal lateral/ventral"
+            systems = ["audition ou parole", "semantique", "indices sociaux ou narratifs"]
+        else:
+            zone = "jonction temporo-parietale"
+            systems = ["integration de contexte", "passage entre contenu sensoriel et interpretation"]
+    else:
+        if dv == "dorsale":
+            zone = "cortex frontal dorsal"
+            systems = ["controle attentionnel", "planification", "maintien du contexte"]
+        elif dv == "ventrale":
+            zone = "cortex fronto-temporal ventral"
+            systems = ["evaluation de signification", "contexte socio-affectif", "integration de valeur"]
+        else:
+            zone = "cortex prefrontal"
+            systems = ["integration de haut niveau", "contexte", "prediction ou decision"]
+
+    modality_hint = {
+        "video": "Le profil est compatible avec un melange d'indices visuels, sonores et linguistiques.",
+        "audio": "Le profil doit surtout etre lu comme une reponse au contenu auditif et, si disponible, a la parole.",
+        "text": "Le profil doit surtout etre lu comme une reponse au contenu linguistique et au contexte semantique.",
+        "image": "Le profil doit surtout etre lu comme une reponse au contenu visuel fixe.",
+    }[input_kind]
+
+    if lat == "gauche":
+        lateral_note = "La lateralisation gauche peut etre compatible avec du langage ou un traitement plus sequentiel, sans que ce soit specifique."
+    elif lat == "droite":
+        lateral_note = "La lateralisation droite peut etre compatible avec prosodie, scene globale ou indices socio-affectifs, sans que ce soit specifique."
+    else:
+        lateral_note = "La bilateralite suggere plutot un traitement distribue ou multisensoriel."
+
+    return {
+        "zone": f"{zone}, plutot {lat}",
+        "systems": systems,
+        "modality_hint": modality_hint,
+        "lateral_note": lateral_note,
+    }
+
+
+def build_result_interpretation(
+    run: PredictionRun,
+    *,
+    timestep: int,
+    description: dict[str, tp.Any] | None = None,
+    segment_text: str | None = None,
+) -> dict[str, tp.Any]:
+    """Explain one result with cautious functional and affective hypotheses."""
+    description = description or describe_timestep(run.preds, timestep=timestep)
+    region = infer_region_profile(description, input_kind=run.input_kind)
+    if segment_text is None:
+        if timestep < len(run.segments):
+            segment_text = get_segment_text(run.segments[timestep])
+        elif run.input_kind == "text":
+            segment_text = run.raw_text or ""
+    affect = infer_affective_cues(segment_text)
+
+    if affect["available"]:
+        affect_summary = (
+            f"Le stimulus courant semble {affect['valence']}; "
+            f"indices emotionnels: {', '.join(affect['emotions']) if affect['emotions'] else 'non dominants'}."
+        )
+    else:
+        affect_summary = (
+            "Aucune lecture fiable de type peur/desir/joie ne doit etre deduite de la carte seule; "
+            "il manque ici des indices textuels assez nets."
+        )
+
+    summary = (
+        f"Zone probablement dominante: {region['zone']}. "
+        f"Cette configuration est compatible avec {', '.join(region['systems'][:2])}. "
+        f"{affect_summary}"
+    )
+    cautions = [
+        "Les zones et fonctions proposees ici sont des hypotheses grossieres a partir d'une topographie predite, pas une localisation clinique.",
+        "Les etiquettes affectives proviennent du stimulus textuel aligne quand il existe; elles ne sont pas decodees directement depuis la carte cerebrale.",
+    ]
+    return {
+        "zone": region["zone"],
+        "systems": region["systems"],
+        "modality_hint": region["modality_hint"],
+        "lateral_note": region["lateral_note"],
+        "affect": affect,
+        "summary": summary,
+        "cautions": cautions,
+    }
 
 
 def render_brain_figure(

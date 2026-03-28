@@ -53,6 +53,7 @@ from tribev2.easy import (
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
+    build_result_interpretation,
     collect_timestep_metadata,
     describe_timestep,
     export_prediction_video,
@@ -608,6 +609,35 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         exp_cols = st.columns(2)
         exp_cols[0].metric("Zone AP", description["antero_posterior"].capitalize())
         exp_cols[1].metric("Top 1% du signal", f"{description['focus_share']:.1%}")
+        interpretation = build_result_interpretation(
+            run,
+            timestep=timestep,
+            description=description,
+            segment_text=preview["text"],
+        )
+        st.markdown("**Interpretation du resultat**")
+        st.caption(interpretation["summary"])
+        infer_cols = st.columns(2)
+        infer_cols[0].metric("Zone probable", interpretation["zone"])
+        infer_cols[1].metric(
+            "Valence stimulus",
+            interpretation["affect"]["valence"].capitalize(),
+        )
+        st.markdown("- " + interpretation["modality_hint"])
+        st.markdown("- " + interpretation["lateral_note"])
+        st.markdown("- Fonctions plausibles: " + ", ".join(interpretation["systems"]))
+        if interpretation["affect"]["evidence"]:
+            st.markdown(
+                "- Indices affectifs reperes dans le stimulus: "
+                + ", ".join(interpretation["affect"]["evidence"])
+            )
+        else:
+            st.markdown(
+                "- Aucun indice textuel assez net pour qualifier le resultat en peur, desir, joie, etc."
+            )
+        st.caption(
+            "Les etiquettes affectives viennent du stimulus textuel aligne quand il existe; ce n'est pas une lecture directe de l'etat mental depuis la carte."
+        )
 
     with st.expander("Explication", expanded=False):
         report = build_explainability_report(
@@ -779,6 +809,19 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             fig = render_brain_figure(item.preds, timestep=timestep, vmin=0.5)
             st.pyplot(fig, clear_figure=True, width="stretch")
             st.caption(description["summary"])
+            interpretation = build_result_interpretation(
+                item,
+                timestep=timestep,
+                description=description,
+            )
+            st.markdown("**Interpretation du resultat**")
+            st.caption(interpretation["summary"])
+            st.markdown(f"- Zone probable: {interpretation['zone']}")
+            st.markdown("- Fonctions plausibles: " + ", ".join(interpretation["systems"]))
+            st.markdown("- " + interpretation["modality_hint"])
+            st.caption(
+                "Sur une image seule, le dashboard peut proposer une lecture fonctionnelle grossiere de la zone, mais pas une emotion fiable decodee depuis la carte."
+            )
             with st.expander(f"Pourquoi l'image {idx} genere cette carte", expanded=False):
                 render_explainability_report(
                     build_explainability_report(

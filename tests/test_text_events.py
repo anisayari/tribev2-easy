@@ -11,8 +11,10 @@ from tribev2.easy import (
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
+    build_result_interpretation,
     collect_timestep_metadata,
     describe_timestep,
+    infer_affective_cues,
     prepare_events,
     resolve_text_model_name,
 )
@@ -214,3 +216,34 @@ def test_collect_timestep_metadata_uses_segment_timing():
     assert timeline[0]["duration"] == 0.8
     assert timeline[1]["start"] == 0.8
     assert timeline[1]["duration"] == 1.2
+
+
+def test_infer_affective_cues_detects_negative_fear_signal():
+    affect = infer_affective_cues("I am scared and worried about the danger ahead.")
+
+    assert affect["valence"] == "plutot negative"
+    assert "fear" in affect["emotions"]
+    assert "danger" in affect["evidence"]
+
+
+def test_build_result_interpretation_uses_text_cues_for_affect():
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :128] = 2.0
+    run = PredictionRun(
+        events=build_text_events_from_text("I want safety and love, not fear."),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="I want safety and love, not fear.",
+    )
+
+    interpretation = build_result_interpretation(
+        run,
+        timestep=0,
+        description=describe_timestep(preds, timestep=0),
+        segment_text="I want safety and love, not fear.",
+    )
+
+    assert interpretation["zone"]
+    assert interpretation["systems"]
+    assert interpretation["affect"]["valence"] in {"plutot positive", "mixte", "plutot negative"}
