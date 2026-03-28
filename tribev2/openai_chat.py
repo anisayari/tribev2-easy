@@ -8,11 +8,14 @@ import pandas as pd
 
 from tribev2.easy import (
     ImageComparisonRun,
+    MultiModalRun,
     PredictionRun,
     collect_timestep_metadata,
-    render_brain_panel_bytes,
+    render_run_panel_bytes,
     summarize_predictions,
 )
+
+render_brain_panel_bytes = render_run_panel_bytes
 
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-5.4"
 LOGGER = logging.getLogger("tribev2.openai_chat")
@@ -41,6 +44,13 @@ def _build_modality_notes(run: PredictionRun | ImageComparisonRun) -> list[str]:
             "Chaque image fixe est convertie en court clip video silencieux statique pour passer dans TRIBE v2.",
             "Les timesteps pour une image ne racontent donc pas une evolution temporelle reelle; ils repetent le meme contenu visuel.",
             "La comparaison doit surtout porter sur la distribution spatiale, la lateralite, la saillance et le ton affectif plausible du contenu visuel.",
+        ]
+    if isinstance(run, MultiModalRun) or run.input_kind == "multimodal":
+        return [
+            "La source combine plusieurs modalites dans un meme run.",
+            "Le dashboard calcule un run fusionne pour la prediction principale, puis des runs separes par modalite pour colorer le cerveau par contribution.",
+            "Le code couleur de l'overlay est: rouge pour le visuel, vert pour l'audio, bleu pour le texte.",
+            "Les couleurs representent une contribution relative par famille de modalite au meme timestep, pas des regions anatomiques differentes.",
         ]
     if run.input_kind == "video":
         return [
@@ -229,8 +239,8 @@ def _prediction_run_context_images(
                 "type": "input_image",
                 "detail": image_detail,
                 "image_url": _to_base64_data_url(
-                    render_brain_panel_bytes(
-                        run.preds,
+                    render_run_panel_bytes(
+                        run,
                         timestep=idx,
                         image_format="JPEG",
                         quality=84,

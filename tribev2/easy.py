@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 import io
 import json
@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 
 from tribev2.demo_utils import (
@@ -70,6 +70,27 @@ class ImageComparisonRun:
     @property
     def input_kind(self) -> str:
         return "image"
+
+
+@dataclass
+class MultiModalRun(PredictionRun):
+    component_runs: dict[str, PredictionRun] = field(default_factory=dict)
+    source_paths: dict[str, Path] = field(default_factory=dict)
+    primary_input_kind: str | None = None
+
+
+MULTIMODAL_CHANNEL_ORDER: tuple[str, ...] = ("visual", "audio", "text")
+MULTIMODAL_CHANNEL_LABELS: dict[str, str] = {
+    "visual": "Visuel",
+    "audio": "Audio",
+    "text": "Texte",
+}
+MULTIMODAL_SOURCE_LABELS: dict[str, str] = {
+    "video": "Vidéo",
+    "image": "Image",
+    "audio": "Audio",
+    "text": "Texte",
+}
 
 
 EXPLAINABILITY_SOURCES: tuple[tuple[str, str], ...] = (
@@ -372,6 +393,119 @@ def predict_from_prepared_events(
     )
 
 
+def build_multimodal_events(
+    *,
+    cache_folder: str | Path,
+    text: str | None = None,
+    text_path: str | Path | None = None,
+    audio_path: str | Path | None = None,
+    video_path: str | Path | None = None,
+    image_path: str | Path | None = None,
+    transcribe: bool = False,
+    direct_text: bool = True,
+    seconds_per_word: float = 0.45,
+    max_context_words: int = 128,
+    image_duration: float = 4.0,
+    image_fps: int = 6,
+) -> tuple[pd.DataFrame, dict[str, dict[str, tp.Any]]]:
+    """Prepare one combined events frame plus per-modality metadata."""
+    component_specs: list[tuple[str, dict[str, tp.Any]]] = []
+    if video_path is not None:
+        component_specs.append(("video", {"video_path": video_path}))
+    if image_path is not None:
+        component_specs.append(("image", {"image_path": image_path}))
+    if audio_path is not None:
+        component_specs.append(("audio", {"audio_path": audio_path}))
+    if text is not None or text_path is not None:
+        component_specs.append(("text", {"text": text, "text_path": text_path}))
+    if len(component_specs) < 2:
+        raise ValueError("At least two modalities are required to build a multimodal run.")
+
+    prepared_components: dict[str, dict[str, tp.Any]] = {}
+    frames: list[pd.DataFrame] = []
+    cache_folder = Path(cache_folder)
+    for modality, payload in component_specs:
+        events, input_kind = prepare_events(
+            cache_folder=cache_folder,
+            transcribe=transcribe,
+            direct_text=direct_text,
+            seconds_per_word=seconds_per_word,
+            max_context_words=max_context_words,
+            image_duration=image_duration,
+            image_fps=image_fps,
+            **payload,
+        )
+        raw_text_value = None
+        if modality == "text":
+            raw_text_value = text if text is not None else Path(tp.cast(str | Path, text_path)).read_text(encoding="utf-8")
+        source_path = payload.get("video_path") or payload.get("audio_path") or payload.get("image_path")
+        prepared_components[modality] = {
+            "events": events.copy(),
+            "input_kind": input_kind,
+            "source_path": Path(source_path) if source_path else None,
+            "raw_text": raw_text_value,
+        }
+        frames.append(events)
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    sort_columns = [column for column in ("start", "timeline", "type") if column in combined.columns]
+    if sort_columns:
+        combined = combined.sort_values(sort_columns, kind="stable").reset_index(drop=True)
+    return combined, prepared_components
+
+
+def predict_multimodal_from_prepared_events(
+    model: TribeModel,
+    combined_events: pd.DataFrame,
+    *,
+    prepared_components: dict[str, dict[str, tp.Any]],
+    verbose: bool = True,
+) -> MultiModalRun:
+    """Run one fused prediction and one prediction per modality."""
+    component_runs: dict[str, PredictionRun] = {}
+    for modality, spec in prepared_components.items():
+        component_runs[modality] = predict_from_prepared_events(
+            model,
+            tp.cast(pd.DataFrame, spec["events"]),
+            input_kind=str(spec["input_kind"]),
+            source_path=tp.cast(Path | None, spec["source_path"]),
+            raw_text=tp.cast(str | None, spec["raw_text"]),
+            verbose=False,
+        )
+
+    combined_source_path = None
+    primary_input_kind = None
+    for candidate in ("video", "image", "audio", "text"):
+        if candidate in prepared_components:
+            primary_input_kind = candidate
+            combined_source_path = tp.cast(Path | None, prepared_components[candidate]["source_path"])
+            break
+
+    fused = predict_from_prepared_events(
+        model,
+        combined_events,
+        input_kind="multimodal",
+        source_path=combined_source_path,
+        raw_text=tp.cast(str | None, prepared_components.get("text", {}).get("raw_text")),
+        verbose=verbose,
+    )
+    return MultiModalRun(
+        events=fused.events,
+        preds=fused.preds,
+        segments=fused.segments,
+        input_kind=fused.input_kind,
+        source_path=fused.source_path,
+        raw_text=fused.raw_text,
+        component_runs=component_runs,
+        source_paths={
+            modality: spec["source_path"]
+            for modality, spec in prepared_components.items()
+            if spec.get("source_path") is not None
+        },
+        primary_input_kind=primary_input_kind,
+    )
+
+
 def summarize_predictions(preds: np.ndarray) -> pd.DataFrame:
     """Build a lightweight summary dataframe for charts."""
     return pd.DataFrame(
@@ -387,6 +521,13 @@ def summarize_predictions(preds: np.ndarray) -> pd.DataFrame:
 
 def list_run_channels(run: PredictionRun) -> list[str]:
     """Describe which signal channels are represented in the prepared events."""
+    if isinstance(run, MultiModalRun):
+        ordered: list[str] = []
+        for modality in ("video", "image", "audio", "text"):
+            if modality in run.component_runs:
+                ordered.append(MULTIMODAL_SOURCE_LABELS[modality].lower())
+        if ordered:
+            return ordered
     channels: list[str] = []
     event_types = {str(value).strip().lower() for value in run.events.get("type", pd.Series(dtype=object)).dropna()}
     if run.input_kind == "image":
@@ -553,6 +694,7 @@ def infer_region_profile(
         "audio": "Le profil doit surtout etre lu comme une reponse au contenu auditif et, si disponible, a la parole.",
         "text": "Le profil doit surtout etre lu comme une reponse au contenu linguistique et au contexte semantique.",
         "image": "Le profil doit surtout etre lu comme une reponse au contenu visuel fixe.",
+        "multimodal": "Le profil combine ici plusieurs modalites et doit etre lu comme une superposition visuelle, auditive et/ou linguistique.",
     }[input_kind]
 
     if lat == "gauche":
@@ -628,6 +770,35 @@ def build_timestep_reports(
     if indices is None:
         indices = list(range(len(run.preds)))
     rows: list[dict[str, tp.Any]] = []
+    if isinstance(run, MultiModalRun):
+        summary = summarize_predictions(run.preds).set_index("timestep")
+        for idx in indices:
+            meta = metadata[idx]
+            _, channel_labels, _, matched_indices = _build_multimodal_overlay_signals(
+                run,
+                timestep=idx,
+            )
+            channel_text = ", ".join(MULTIMODAL_CHANNEL_LABELS[label] for label in channel_labels) or "Fusion"
+            aligned_text = ", ".join(
+                f"{MULTIMODAL_SOURCE_LABELS.get(modality, modality)} t{matched_idx}"
+                for modality, matched_idx in matched_indices.items()
+            )
+            row = summary.loc[idx]
+            rows.append(
+                {
+                    "timestep": idx,
+                    "start_s": round(float(meta["start"]), 3),
+                    "duration_s": round(float(meta["duration"]), 3),
+                    "text": meta["text"],
+                    "summary": f"Overlay multimodal {channel_text}.",
+                    "zone": "Fusion multimodale",
+                    "systems": channel_text,
+                    "valence": "indeterminee",
+                    "emotions": "",
+                    "evidence": aligned_text or f"mean_abs={float(row['mean_abs']):.4f}",
+                }
+            )
+        return rows
     for idx in indices:
         meta = metadata[idx]
         description = describe_timestep(run.preds, timestep=idx)
@@ -688,6 +859,228 @@ def render_brain_figure(
     return fig
 
 
+def _get_timestep_row(run: PredictionRun, timestep: int) -> dict[str, tp.Any]:
+    metadata = collect_timestep_metadata(run)
+    if not metadata:
+        return {"index": timestep, "start": float(timestep), "duration": 1.0, "text": ""}
+    safe_index = max(0, min(timestep, len(metadata) - 1))
+    return metadata[safe_index]
+
+
+def _get_multimodal_channel(modality: str) -> str:
+    if modality in {"video", "image"}:
+        return "visual"
+    if modality == "audio":
+        return "audio"
+    return "text"
+
+
+def _build_multimodal_overlay_signals(
+    run: MultiModalRun,
+    *,
+    timestep: int,
+    norm_percentile: int | None = 99,
+) -> tuple[list[np.ndarray], list[str], np.ndarray, dict[str, int]]:
+    target = _get_timestep_row(run, timestep)
+    target_center = float(target["start"]) + (float(target["duration"]) / 2.0)
+    grouped: dict[str, list[np.ndarray]] = {channel: [] for channel in MULTIMODAL_CHANNEL_ORDER}
+    matched_indices: dict[str, int] = {}
+
+    for modality, component_run in run.component_runs.items():
+        metadata = collect_timestep_metadata(component_run)
+        if len(component_run.preds) == 0:
+            continue
+        if metadata:
+            centers = np.array(
+                [float(row["start"]) + (float(row["duration"]) / 2.0) for row in metadata],
+                dtype=float,
+            )
+            component_index = int(np.argmin(np.abs(centers - target_center)))
+        else:
+            component_index = min(timestep, len(component_run.preds) - 1)
+        matched_indices[modality] = component_index
+        signal = np.abs(np.asarray(component_run.preds[component_index], dtype=float))
+        if norm_percentile is not None:
+            signal = normalize_signal_for_display(signal, percentile=norm_percentile)
+        signal = np.clip(np.nan_to_num(signal, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+        grouped[_get_multimodal_channel(modality)].append(signal)
+
+    channel_signals: list[np.ndarray] = []
+    channel_labels: list[str] = []
+    for channel in MULTIMODAL_CHANNEL_ORDER:
+        signals = grouped[channel]
+        if not signals:
+            continue
+        if len(signals) == 1:
+            merged = signals[0]
+        else:
+            merged = np.mean(np.stack(signals, axis=0), axis=0)
+        channel_signals.append(np.clip(merged, 0.0, 1.0))
+        channel_labels.append(channel)
+
+    if channel_signals:
+        alpha_signal = np.max(np.stack(channel_signals, axis=0), axis=0)
+    else:
+        alpha_signal = np.zeros(run.preds.shape[1], dtype=float)
+    return channel_signals, channel_labels, np.clip(alpha_signal, 0.0, 1.0), matched_indices
+
+
+def _get_multimodal_surface_render_data(
+    run: MultiModalRun,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    norm_percentile: int | None = 99,
+) -> tuple[PlotBrainPyvista, np.ndarray, np.ndarray, np.ndarray, list[str], dict[str, int]] | None:
+    channel_signals, channel_labels, alpha_signal, matched_indices = _build_multimodal_overlay_signals(
+        run,
+        timestep=timestep,
+        norm_percentile=norm_percentile,
+    )
+    if len(channel_signals) < 2:
+        return None
+
+    plotter = get_pyvista_plotter(mesh)
+    hemis = [plotter.get_hemis(signal) for signal in channel_signals]
+    alpha_hemis = plotter.get_hemis(alpha_signal)
+    both_colors: np.ndarray | None = None
+    bg_cmap = plt.get_cmap("gray_r")
+    for selected_hemi in ("left", "right", "both"):
+        stat_maps = [hemi[selected_hemi]["stat_map"] for hemi in hemis]
+        colors = np.stack(stat_maps, axis=1)
+        if colors.shape[1] == 2:
+            colors = np.concatenate([colors, np.zeros((colors.shape[0], 1))], axis=1)
+        colors = np.clip(colors, 0.0, 1.0)
+        alpha = np.clip(alpha_hemis[selected_hemi]["stat_map"][:, None], 0.0, 1.0)
+        bg_map = hemis[0][selected_hemi]["bg_map"]
+        bg_norm = (bg_map - bg_map.min()) / (bg_map.max() - bg_map.min() + 1e-8)
+        bg_rgba = bg_cmap(bg_norm)
+        rgba = np.concatenate([colors, np.ones((colors.shape[0], 1))], axis=1)
+        rgba[:, :3] = rgba[:, :3] * alpha + bg_rgba[:, :3] * (1.0 - alpha)
+        if selected_hemi == "both":
+            both_colors = rgba
+
+    mesh_data = plotter._mesh["both"]
+    assert both_colors is not None
+    return (
+        plotter,
+        mesh_data["coords"],
+        mesh_data["faces"],
+        both_colors,
+        channel_labels,
+        matched_indices,
+    )
+
+
+def render_multimodal_brain_panel_image(
+    run: MultiModalRun,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    views: tuple[str, ...] = ("left", "right", "dorsal"),
+    norm_percentile: int = 99,
+) -> np.ndarray:
+    plotter = get_pyvista_plotter(mesh)
+    channel_signals, _, alpha_signal, _ = _build_multimodal_overlay_signals(
+        run,
+        timestep=timestep,
+        norm_percentile=norm_percentile,
+    )
+    if len(channel_signals) < 2:
+        return render_brain_panel_image(
+            run.preds,
+            timestep=timestep,
+            mesh=mesh,
+            views=views,
+            cmap="fire",
+            norm_percentile=norm_percentile,
+            vmin=0.5,
+        )
+    fig, axes = plt.subplots(
+        1,
+        len(views),
+        figsize=(2.2 * len(views), 2.1),
+        squeeze=False,
+    )
+    flat_axes = list(axes.flatten())
+    plotter.plot_surf_rgb(
+        channel_signals,
+        alpha_signals=alpha_signal,
+        norm_percentile=None,
+        axes=flat_axes,
+        views=list(views),
+    )
+    for ax in flat_axes:
+        ax.axis("off")
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.99, bottom=0.01, wspace=0.01, hspace=0.01)
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight", pad_inches=0.0)
+    plt.close(fig)
+    buffer.seek(0)
+    return np.array(Image.open(buffer).convert("RGB"))
+
+
+def render_run_panel_image(
+    run: PredictionRun,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    views: tuple[str, ...] = ("left", "right", "dorsal"),
+    cmap: str = "fire",
+    norm_percentile: int = 99,
+    vmin: float | None = 0.5,
+) -> np.ndarray:
+    if isinstance(run, MultiModalRun):
+        return render_multimodal_brain_panel_image(
+            run,
+            timestep=timestep,
+            mesh=mesh,
+            views=views,
+            norm_percentile=norm_percentile,
+        )
+    return render_brain_panel_image(
+        run.preds,
+        timestep=timestep,
+        mesh=mesh,
+        views=views,
+        cmap=cmap,
+        norm_percentile=norm_percentile,
+        vmin=vmin,
+    )
+
+
+def render_run_panel_bytes(
+    run: PredictionRun,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    views: tuple[str, ...] = ("left", "right", "dorsal"),
+    cmap: str = "fire",
+    norm_percentile: int = 99,
+    vmin: float | None = 0.5,
+    image_format: str = "JPEG",
+    quality: int = 84,
+) -> bytes:
+    image = Image.fromarray(
+        render_run_panel_image(
+            run,
+            timestep=timestep,
+            mesh=mesh,
+            views=views,
+            cmap=cmap,
+            norm_percentile=norm_percentile,
+            vmin=vmin,
+        )
+    )
+    buffer = io.BytesIO()
+    save_kwargs: dict[str, tp.Any] = {}
+    if image_format.upper() == "JPEG":
+        image = image.convert("RGB")
+        save_kwargs.update({"quality": quality, "optimize": True})
+    image.save(buffer, format=image_format.upper(), **save_kwargs)
+    return buffer.getvalue()
+
+
 def render_prediction_mosaic(
     run: PredictionRun,
     *,
@@ -712,8 +1105,8 @@ def render_prediction_mosaic(
         gridspec_kw={"height_ratios": row_heights},
     )
     for idx in range(n_timesteps):
-        brain_img = render_brain_panel_image(
-            run.preds,
+        brain_img = render_run_panel_image(
+            run,
             timestep=idx,
             mesh=mesh,
             vmin=0.5,
@@ -828,6 +1221,37 @@ def render_brain_panel_bytes(
     return buffer.getvalue()
 
 
+def _annotate_frame_with_timestep(image: Image.Image, timestep: int) -> Image.Image:
+    """Overlay a compact timestep badge in the lower-left corner."""
+    frame = image.convert("RGBA")
+    draw = ImageDraw.Draw(frame, "RGBA")
+    font = ImageFont.load_default()
+    label = f"t={timestep}"
+    bbox = draw.textbbox((0, 0), label, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    pad_x = max(8, frame.width // 110)
+    pad_y = max(5, frame.height // 160)
+    margin_x = max(10, frame.width // 36)
+    margin_y = max(10, frame.height // 30)
+    x = margin_x
+    y = max(0, frame.height - margin_y - text_height - (pad_y * 2))
+    draw.rounded_rectangle(
+        (
+            x - pad_x,
+            y - pad_y,
+            x + text_width + pad_x,
+            y + text_height + pad_y,
+        ),
+        radius=max(8, frame.height // 80),
+        fill=(15, 23, 34, 190),
+        outline=(255, 255, 255, 42),
+        width=1,
+    )
+    draw.text((x, y), label, font=font, fill=(255, 248, 242, 255))
+    return frame.convert("RGB")
+
+
 def render_prediction_gif(
     run: PredictionRun,
     *,
@@ -840,13 +1264,16 @@ def render_prediction_gif(
     if not indices:
         raise ValueError("Cannot render an animation for an empty prediction run.")
     frames = [
-        Image.fromarray(
-            render_brain_panel_image(
-                run.preds,
-                timestep=idx,
-                mesh=mesh,
-                vmin=vmin,
-            )
+        _annotate_frame_with_timestep(
+            Image.fromarray(
+                render_run_panel_image(
+                    run,
+                    timestep=idx,
+                    mesh=mesh,
+                    vmin=vmin,
+                )
+            ),
+            idx,
         ).convert("P", palette=Image.ADAPTIVE)
         for idx in indices
     ]
@@ -984,16 +1411,52 @@ def render_animated_brain_3d_html(
     coords = np.round(mesh_data["coords"], 3)
     faces = mesh_data["faces"].astype(int)
     timeline = collect_timestep_metadata(run)
-    reports = build_timestep_reports(run, indices=indices)
     frames: list[dict[str, tp.Any]] = []
-    for idx, report in zip(indices, reports):
-        _, _, _, colors = _get_surface_render_data(
-            run.preds[idx],
-            mesh=mesh,
-            norm_percentile=norm_percentile,
-            cmap="fire",
-            vmin=vmin,
-        )
+    reports = build_timestep_reports(run, indices=indices) if not isinstance(run, MultiModalRun) else None
+    for frame_offset, idx in enumerate(indices):
+        if isinstance(run, MultiModalRun):
+            multimodal_surface = _get_multimodal_surface_render_data(
+                run,
+                timestep=idx,
+                mesh=mesh,
+                norm_percentile=norm_percentile,
+            )
+            if multimodal_surface is None:
+                _, _, _, colors = _get_surface_render_data(
+                    run.preds[idx],
+                    mesh=mesh,
+                    norm_percentile=norm_percentile,
+                    cmap="fire",
+                    vmin=vmin,
+                )
+                report = {
+                    "text": timeline[idx]["text"],
+                    "summary": "Fusion multimodale disponible, mais une seule famille de modalite contribue visiblement a ce timestep.",
+                    "zone": "Fusion multimodale",
+                    "valence": "indeterminee",
+                }
+            else:
+                _, _, _, colors, channel_labels, matched_indices = multimodal_surface
+                label_text = ", ".join(MULTIMODAL_CHANNEL_LABELS[label] for label in channel_labels)
+                matched_text = ", ".join(
+                    f"{MULTIMODAL_SOURCE_LABELS.get(modality, modality)} t{matched_idx}"
+                    for modality, matched_idx in matched_indices.items()
+                )
+                report = {
+                    "text": timeline[idx]["text"],
+                    "summary": f"Overlay multimodal {label_text}. Alignement courant: {matched_text}.",
+                    "zone": "Fusion multimodale",
+                    "valence": "indeterminee",
+                }
+        else:
+            report = tp.cast(list[dict[str, tp.Any]], reports)[frame_offset]
+            _, _, _, colors = _get_surface_render_data(
+                run.preds[idx],
+                mesh=mesh,
+                norm_percentile=norm_percentile,
+                cmap="fire",
+                vmin=vmin,
+            )
         frames.append(
             {
                 "index": idx,
@@ -1639,6 +2102,82 @@ def build_video_from_image(
     )
     subprocess.run(cmd, capture_output=True, text=True, check=True)
     return output_path
+
+
+def build_browser_media_proxy(
+    *,
+    source_path: str | Path,
+    output_folder: str | Path,
+) -> Path:
+    """Transcode source media to a browser-friendly proxy for dashboard playback."""
+    source_path = Path(source_path)
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    suffix = source_path.suffix.lower()
+    stat = source_path.stat()
+    safe_stem = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in source_path.stem)
+    fingerprint = f"{stat.st_size}_{stat.st_mtime_ns}"
+    ffmpeg_bin = resolve_ffmpeg()
+
+    if suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}:
+        video_encoder = resolve_video_encoder(ffmpeg_bin)
+        output_path = output_folder / f"{safe_stem}_{fingerprint}_sync.mp4"
+        if output_path.exists():
+            return output_path
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(source_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+            "-c:v",
+            video_encoder,
+        ]
+        if video_encoder == "libx264":
+            cmd.extend(["-crf", "20"])
+        elif video_encoder == "libopenh264":
+            cmd.extend(["-b:v", "4M"])
+        else:
+            cmd.extend(["-q:v", "3"])
+        cmd.extend(
+            [
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+        )
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return output_path
+
+    if suffix in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}:
+        output_path = output_folder / f"{safe_stem}_{fingerprint}_sync.wav"
+        if output_path.exists():
+            return output_path
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return output_path
+
+    return source_path
 
 
 def write_text_to_temp_file(text: str, folder: str | Path) -> Path:

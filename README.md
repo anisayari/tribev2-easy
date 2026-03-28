@@ -35,6 +35,16 @@ This fork keeps the original TRIBE v2 codebase, then adds a cleaner local workfl
 - MP4 export of prediction dynamics over time
 - Safer local plotting and ffmpeg handling for the packaged demo workflow
 
+## Attribution
+
+If you create figures, videos, dashboards, or other visualizations with this fork, please cite the original TRIBE v2 work and reference the original repository from Meta / Facebook Research.
+
+- Paper: [A foundation model of vision, audition, and language for in silico neuroscience](https://ai.meta.com/research/publications/a-foundation-model-of-vision-audition-and-language-for-in-silico-neuroscience/)
+- Original repository: [facebookresearch/tribev2](https://github.com/facebookresearch/tribev2)
+- This fork: [anisayari/tribev2-easy](https://github.com/anisayari/tribev2-easy)
+
+In practice, if you publish derived visualizations made with this codebase, mention both the original TRIBE v2 authors and the repository you used.
+
 ## Dashboard Overview
 
 ![TRIBE v2 Easy dashboard](docs/dashboard-overview.png)

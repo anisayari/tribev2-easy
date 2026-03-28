@@ -34,11 +34,15 @@ _apply_warning_filters()
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     ImageComparisonRun,
+    MultiModalRun,
     PredictionRun,
+    build_browser_media_proxy,
     collect_timestep_metadata,
     export_prediction_video,
     load_model,
+    predict_multimodal_from_prepared_events,
     predict_from_prepared_events,
+    build_multimodal_events,
     prepare_events,
     render_animated_brain_3d_html,
     render_brain_panel_bytes,
@@ -67,52 +71,47 @@ def configure_dashboard_logging(cache_folder: Path) -> Path:
 
 def apply_theme() -> None:
     st.set_page_config(
-        page_title="TRIBE v2 Easy",
+        page_title="TRIBE v2",
         layout="wide",
         initial_sidebar_state="expanded",
     )
     st.markdown(
         """
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
           :root {
-            --bg: #edf1f5;
-            --bg-deep: #dfe5eb;
-            --panel: rgba(255, 255, 255, 0.78);
-            --panel-solid: #ffffff;
-            --ink: #0f1722;
-            --muted: #617082;
-            --line: rgba(15, 23, 34, 0.10);
-            --accent: #ff6a1f;
-            --accent-strong: #e55610;
-            --accent-soft: rgba(255, 106, 31, 0.12);
-            --navy: #0e1724;
-            --navy-soft: #182335;
+            --bg: #f4f4f5;
+            --ink: #09090b;
+            --muted: #71717a;
+            --line: #e4e4e7;
+            --accent: #ea580c;
+            --sidebar-bg: #18181b;
+            --sidebar-fg: #fafafa;
+            --panel: #ffffff;
           }
           html, body, [class*="css"] {
-            font-family: "IBM Plex Sans", sans-serif;
+            font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+            font-size: 14px;
           }
           h1, h2, h3, h4, h5, h6 {
-            font-family: "Space Grotesk", sans-serif;
-            letter-spacing: -0.03em;
+            font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+            letter-spacing: -0.02em;
+            font-weight: 600;
           }
           .stApp {
-            background:
-              radial-gradient(circle at top right, rgba(255, 106, 31, 0.11), transparent 22%),
-              linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+            background: var(--bg);
             color: var(--ink);
           }
           .block-container {
-            max-width: 1700px;
-            padding-top: 0.9rem;
-            padding-bottom: 1.1rem;
-            padding-left: 1.2rem;
-            padding-right: 1.2rem;
+            max-width: 1680px;
+            padding-top: 0.5rem;
+            padding-bottom: 0.75rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
           }
           [data-testid="stSidebar"] {
-            background:
-              linear-gradient(180deg, var(--navy) 0%, #121d2b 55%, var(--navy-soft) 100%);
-            border-right: 1px solid rgba(255, 255, 255, 0.06);
+            background: var(--sidebar-bg);
+            border-right: 1px solid #27272a;
           }
           [data-testid="stSidebar"] h1,
           [data-testid="stSidebar"] h2,
@@ -122,270 +121,215 @@ def apply_theme() -> None:
           [data-testid="stSidebar"] span,
           [data-testid="stSidebar"] small,
           [data-testid="stSidebar"] code {
-            color: #eef3f8;
+            color: var(--sidebar-fg);
           }
           [data-testid="stSidebar"] .stTextInput input,
           [data-testid="stSidebar"] .stTextArea textarea,
           [data-testid="stSidebar"] .stNumberInput input,
           [data-testid="stSidebar"] [data-baseweb="select"] > div {
-            background: rgba(246, 248, 251, 0.96);
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            color: #0f1722;
+            background: #fafafa;
+            border: 1px solid #3f3f46;
+            color: var(--ink);
+            border-radius: 6px;
           }
           [data-testid="stSidebar"] .stTextInput input::placeholder,
           [data-testid="stSidebar"] .stTextArea textarea::placeholder,
           [data-testid="stSidebar"] .stNumberInput input::placeholder {
-            color: #6b7787;
+            color: #71717a;
             opacity: 1;
           }
-          [data-testid="stSidebar"] .stTextInput input,
-          [data-testid="stSidebar"] .stTextArea textarea,
-          [data-testid="stSidebar"] .stNumberInput input {
-            caret-color: #0f1722;
-          }
           [data-testid="stSidebar"] [data-baseweb="select"] * {
-            color: #0f1722;
+            color: var(--ink);
           }
           [data-baseweb="popover"] [role="option"],
           [data-baseweb="popover"] [role="listbox"] *,
           [data-baseweb="popover"] [data-testid="stMarkdownContainer"] * {
-            color: #0f1722;
+            color: var(--ink);
           }
           [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] {
-            padding-top: 0.1rem;
+            padding-top: 0.05rem;
           }
-          .tribe-shellbar {
-            display: grid;
-            grid-template-columns: minmax(340px, 1.2fr) auto;
-            gap: 18px;
-            align-items: end;
-            padding: 1rem 1.05rem 0.85rem 1.05rem;
-            margin-bottom: 0.9rem;
+          .tribe-topbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem 1rem;
+            padding: 0.45rem 0.65rem;
+            margin-bottom: 0.55rem;
             border: 1px solid var(--line);
-            border-radius: 20px;
-            background:
-              linear-gradient(135deg, rgba(255,255,255,0.72), rgba(255,255,255,0.54)),
-              radial-gradient(circle at top right, rgba(255, 106, 31, 0.14), transparent 30%);
-            box-shadow: 0 18px 40px rgba(15, 23, 34, 0.07);
-            backdrop-filter: blur(18px);
+            border-radius: 8px;
+            background: var(--panel);
           }
-          .tribe-shellbar h1 {
-            margin: 0;
-            font-size: clamp(1.45rem, 2vw, 2.15rem);
-            line-height: 1.02;
+          .tribe-brand {
+            font-size: 0.8125rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: var(--ink);
           }
-          .tribe-shellbar p {
-            margin: 0.2rem 0 0 0;
-            max-width: 64ch;
+          .tribe-meta {
+            font-size: 0.75rem;
+            font-variant-numeric: tabular-nums;
             color: var(--muted);
-            font-size: 0.92rem;
-            line-height: 1.45;
+            line-height: 1.35;
+            text-align: right;
+            max-width: min(100%, 72ch);
+          }
+          .tribe-meta b {
+            color: var(--ink);
+            font-weight: 600;
           }
           .tribe-kicker {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            margin-bottom: 0.4rem;
-            font-size: 0.72rem;
+            font-size: 0.65rem;
             font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: var(--accent-strong);
-          }
-          .tribe-pills {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            align-items: center;
-          }
-          .tribe-pill {
-            display: inline-flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 0.08rem;
-            min-width: 118px;
-            padding: 0.5rem 0.72rem 0.54rem 0.72rem;
-            border-radius: 16px;
-            background: rgba(255, 255, 255, 0.48);
-            border: 1px solid rgba(15, 23, 34, 0.08);
-            box-shadow: 0 10px 18px rgba(15, 23, 34, 0.04);
-          }
-          .tribe-pill-label {
-            font-size: 0.62rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
+            letter-spacing: 0.06em;
             text-transform: uppercase;
             color: var(--muted);
-          }
-          .tribe-pill-value {
-            font-size: 0.86rem;
-            color: #18212d;
-            font-weight: 600;
-            line-height: 1.15;
+            margin-bottom: 0.2rem;
           }
           .tribe-sectionhead {
-            margin-bottom: 0.6rem;
+            margin-bottom: 0.45rem;
           }
           .tribe-sectionhead h3 {
             margin: 0;
-            font-size: 1rem;
-            line-height: 1.1;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            line-height: 1.2;
+            color: var(--ink);
           }
           .tribe-sectionhead p {
-            margin: 0.16rem 0 0 0;
+            margin: 0.12rem 0 0 0;
             color: var(--muted);
-            font-size: 0.85rem;
-            line-height: 1.4;
+            font-size: 0.75rem;
+            line-height: 1.35;
           }
           div[data-testid="stVerticalBlockBorderWrapper"] {
             background: var(--panel);
             border: 1px solid var(--line);
-            border-radius: 18px;
-            box-shadow: 0 10px 26px rgba(15, 23, 34, 0.05);
-            backdrop-filter: blur(16px);
+            border-radius: 8px;
+            box-shadow: none;
           }
           div[data-testid="stMetric"] {
-            background: rgba(255, 255, 255, 0.54);
-            border: 1px solid rgba(15, 23, 34, 0.08);
-            border-radius: 14px;
-            padding: 0.35rem 0.6rem;
+            background: #fafafa;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 0.25rem 0.45rem;
             min-height: 0;
           }
           div[data-testid="stMetricLabel"] p {
-            font-size: 0.72rem;
+            font-size: 0.65rem;
             font-weight: 600;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.04em;
             text-transform: uppercase;
             color: var(--muted);
           }
-          div[data-testid="stMetricValue"] {
-            font-family: "Space Grotesk", sans-serif;
-          }
           .stTabs [data-baseweb="tab-list"] {
-            gap: 0.35rem;
-            padding-bottom: 0.15rem;
+            gap: 0.2rem;
+            padding-bottom: 0.1rem;
+            min-height: 0;
           }
           .stTabs [data-baseweb="tab"] {
-            height: 2.25rem;
-            border-radius: 999px;
-            padding: 0 0.95rem;
-            background: rgba(15, 23, 34, 0.05);
-            border: 1px solid rgba(15, 23, 34, 0.06);
+            height: 2rem;
+            border-radius: 6px;
+            padding: 0 0.65rem;
+            font-size: 0.8125rem;
+            background: transparent;
+            border: 1px solid transparent;
           }
           .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg, #111827, #202b39);
-            color: white;
-            box-shadow: 0 10px 18px rgba(15, 23, 34, 0.14);
+            background: var(--ink);
+            color: #fafafa;
+            border-color: var(--ink);
           }
           .stButton > button, .stDownloadButton > button {
-            height: 2.6rem;
-            border-radius: 12px;
-            border: 1px solid rgba(15, 23, 34, 0.08);
-            font-weight: 600;
-            letter-spacing: 0.01em;
+            height: 2.25rem;
+            border-radius: 6px;
+            border: 1px solid var(--line);
+            font-weight: 500;
+            font-size: 0.8125rem;
           }
           .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-            border: none;
+            background: var(--accent);
+            border-color: var(--accent);
             color: white;
-            box-shadow: 0 12px 22px rgba(229, 86, 16, 0.24);
+            box-shadow: none;
           }
           .stButton > button:hover, .stDownloadButton > button:hover {
-            border-color: rgba(15, 23, 34, 0.16);
+            border-color: #a1a1aa;
           }
           .stTextInput input, .stTextArea textarea, .stNumberInput input, [data-baseweb="select"] > div {
-            background: rgba(255, 255, 255, 0.82);
-            border-radius: 12px;
-            border: 1px solid rgba(15, 23, 34, 0.08);
+            background: #fafafa;
+            border-radius: 6px;
+            border: 1px solid var(--line);
           }
           div[data-testid="stFileUploader"] section {
-            border-radius: 16px;
-            border: 1px dashed rgba(15, 23, 34, 0.18);
-            background: rgba(255, 255, 255, 0.46);
+            border-radius: 8px;
+            border: 1px dashed #a1a1aa;
+            background: #fafafa;
           }
           div[data-testid="stDataFrame"] {
-            border-radius: 14px;
+            border-radius: 6px;
             overflow: hidden;
-            border: 1px solid rgba(15, 23, 34, 0.08);
+            border: 1px solid var(--line);
           }
-          .tribe-inline-note {
-            margin-top: 0.3rem;
-            color: var(--muted);
-            font-size: 0.8rem;
-          }
-          .tribe-slimbar {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 0.9rem;
+          .tribe-runrow {
+            display: flex;
+            flex-wrap: wrap;
             align-items: center;
-            padding: 0.78rem 0.9rem;
-            margin-top: 0.7rem;
-            border-radius: 16px;
-            border: 1px solid rgba(15, 23, 34, 0.08);
-            background: rgba(255, 255, 255, 0.5);
-          }
-          .tribe-slimbar-title {
-            font-size: 0.9rem;
-            font-weight: 600;
-            color: var(--ink);
-          }
-          .tribe-slimbar-copy {
-            margin-top: 0.15rem;
-            font-size: 0.8rem;
+            justify-content: space-between;
+            gap: 0.5rem;
+            margin-top: 0.45rem;
+            padding: 0.4rem 0.5rem;
+            border-radius: 6px;
+            border: 1px solid var(--line);
+            background: #fafafa;
+            font-size: 0.75rem;
             color: var(--muted);
+          }
+          .tribe-runrow strong {
+            color: var(--ink);
+            font-weight: 600;
           }
           .tribe-progress-caption {
-            margin-top: 0.4rem;
-            font-size: 0.78rem;
+            margin-top: 0.35rem;
+            font-size: 0.7rem;
             color: var(--muted);
           }
           .tribe-busybutton {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.58rem;
+            gap: 0.45rem;
             width: 100%;
-            min-height: 2.6rem;
-            padding: 0.7rem 1rem;
-            border-radius: 12px;
-            border: 1px solid rgba(15, 23, 34, 0.10);
-            background: linear-gradient(135deg, rgba(112, 123, 140, 0.28), rgba(86, 95, 111, 0.22));
-            color: rgba(15, 23, 34, 0.78);
-            font-weight: 600;
+            min-height: 2.25rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            border: 1px solid var(--line);
+            background: #f4f4f5;
+            color: var(--muted);
+            font-weight: 500;
+            font-size: 0.8125rem;
             user-select: none;
             pointer-events: none;
-            opacity: 0.95;
           }
           .tribe-busyspinner {
-            width: 0.95rem;
-            height: 0.95rem;
+            width: 0.85rem;
+            height: 0.85rem;
             border-radius: 999px;
-            border: 2px solid rgba(15, 23, 34, 0.16);
-            border-top-color: rgba(15, 23, 34, 0.82);
-            animation: tribe-spin 0.75s linear infinite;
+            border: 2px solid #e4e4e7;
+            border-top-color: var(--ink);
+            animation: tribe-spin 0.7s linear infinite;
           }
           @keyframes tribe-spin {
             to { transform: rotate(360deg); }
           }
-          .tribe-keyline {
-            margin: 0.15rem 0 0.7rem 0;
-            height: 1px;
-            background: linear-gradient(90deg, rgba(15,23,34,0.14), rgba(15,23,34,0));
-          }
-          @media (max-width: 960px) {
-            .tribe-shellbar {
-              grid-template-columns: 1fr;
-            }
-            .tribe-pills {
-              justify-content: flex-start;
-            }
-            .tribe-pill {
-              min-width: 0;
-            }
-            .tribe-slimbar {
-              grid-template-columns: 1fr;
-            }
+          .tribe-sidebar-label {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #a1a1aa;
+            margin: 0.35rem 0 0.15rem 0;
           }
         </style>
         """,
@@ -393,37 +337,29 @@ def apply_theme() -> None:
     )
 
 
-def _build_shell_pills(
+def _build_status_meta(
     request: dict[str, object] | None,
     options: dict[str, object] | None,
     cache_folder: Path | None,
 ) -> str:
     request = request or {}
     options = options or {}
-    pills = [
-        ("Source", _format_request_label(request)),
-        ("Device", str(options.get("device", "cuda")).upper()),
-        ("Checkpoint", str(options.get("checkpoint", "facebook/tribev2")).split("/")[-1]),
-        ("Chat", str(options.get("openai_model", DEFAULT_OPENAI_CHAT_MODEL))),
-        ("WhisperX", "on" if options.get("transcribe") else "off"),
-    ]
+    ckpt = str(options.get("checkpoint", "facebook/tribev2")).split("/")[-1]
+    cache_name = ""
     if cache_folder is not None:
-        pills.append(("Cache", Path(cache_folder).name or str(cache_folder)))
-    pills.append(
-        (
-            "Image clip",
-            f"{float(options.get('image_duration', 4.0)):.1f}s @ {int(options.get('image_fps', 6))} fps",
-        )
-    )
-    return "".join(
-        f"""
-        <div class="tribe-pill">
-          <div class="tribe-pill-label">{html.escape(label)}</div>
-          <div class="tribe-pill-value">{html.escape(value)}</div>
-        </div>
-        """
-        for label, value in pills
-    )
+        cache_name = Path(cache_folder).name or str(cache_folder)
+    parts = [
+        _format_request_label(request),
+        str(options.get("device", "cuda")).upper(),
+        ckpt,
+        str(options.get("openai_model", DEFAULT_OPENAI_CHAT_MODEL)),
+        f"WX {'on' if options.get('transcribe') else 'off'}",
+        f"{float(options.get('image_duration', 4.0)):.1f}s×{int(options.get('image_fps', 6))}fps",
+    ]
+    if cache_name:
+        parts.append(cache_name)
+    inner = " · ".join(html.escape(p) for p in parts)
+    return f'<div class="tribe-meta">{inner}</div>'
 
 
 def hero(
@@ -433,53 +369,76 @@ def hero(
 ) -> None:
     st.markdown(
         f"""
-        <div class="tribe-shellbar">
-          <div>
-            <div class="tribe-kicker">TRIBE V2 EASY WORKSPACE</div>
-            <h1>Multimodal brain prediction dashboard</h1>
-            <p>
-              Importez une source, lancez l'inference locale GPU, inspectez les surfaces corticales et demandez l'analyse du run au chat OpenAI.
-            </p>
-          </div>
-          <div class="tribe-pills">
-            {_build_shell_pills(request, options, cache_folder)}
-          </div>
+        <div class="tribe-topbar">
+          <div class="tribe-brand">TRIBE v2</div>
+          {_build_status_meta(request, options, cache_folder)}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def section_head(title: str, caption: str, *, kicker: str | None = None) -> None:
-    kicker_html = (
-        f'<div class="tribe-kicker" style="margin-bottom:0.18rem;">{kicker}</div>'
-        if kicker
-        else ""
-    )
+def section_head(
+    title: str,
+    caption: str | None = None,
+    *,
+    kicker: str | None = None,
+) -> None:
+    kicker_html = f'<div class="tribe-kicker">{html.escape(kicker)}</div>' if kicker else ""
+    cap_html = f"<p>{html.escape(caption)}</p>" if caption else ""
     st.markdown(
         f"""
         <div class="tribe-sectionhead">
           {kicker_html}
-          <h3>{title}</h3>
-          <p>{caption}</p>
+          <h3>{html.escape(title)}</h3>
+          {cap_html}
         </div>
-        <div class="tribe-keyline"></div>
         """,
         unsafe_allow_html=True,
     )
 
 
 def _format_request_label(request: dict[str, object]) -> str:
+    labels: list[str] = []
     if request.get("video_path"):
-        return "Video"
+        labels.append("Vidéo")
     if request.get("audio_path"):
-        return "Audio"
+        labels.append("Audio")
     if request.get("text"):
-        return "Texte"
+        labels.append("Texte")
     if request.get("image_paths"):
         count = len(tp.cast(list[Path], request["image_paths"]))
-        return f"Images x{count}"
-    return "Aucune source"
+        labels.append("Image" if count == 1 else f"Images x{count}")
+    return " + ".join(labels) if labels else "Aucune source"
+
+
+def _validate_request_modalities(request: dict[str, object]) -> str | None:
+    image_paths = tp.cast(list[Path], request.get("image_paths") or [])
+    has_video = bool(request.get("video_path"))
+    has_audio = bool(request.get("audio_path"))
+    has_text = bool(request.get("text"))
+    if has_video and image_paths:
+        return "Choisissez soit une vidéo, soit une image comme source visuelle."
+    if len(image_paths) > 2:
+        return "Chargez au maximum 2 images."
+    if len(image_paths) == 2 and (has_audio or has_text or has_video):
+        return "Le mode 2 images reste séparé. Utilisez une seule image si vous voulez la combiner avec audio ou texte."
+    return None
+
+
+def _format_run_input_kind(run: PredictionRun | ImageComparisonRun) -> str:
+    if isinstance(run, ImageComparisonRun):
+        return f"Images x{len(run.runs)}"
+    if isinstance(run, MultiModalRun):
+        ordered = []
+        for modality in ("video", "image", "audio", "text"):
+            if modality in run.component_runs:
+                ordered.append({"video": "Vidéo", "image": "Image", "audio": "Audio", "text": "Texte"}[modality])
+        return " + ".join(ordered) if ordered else "Multimodal"
+    return {"video": "Vidéo", "audio": "Audio", "text": "Texte", "image": "Image"}.get(
+        run.input_kind,
+        run.input_kind.title(),
+    )
 
 
 def render_action_progress(
@@ -604,6 +563,10 @@ def build_data_uri(raw_bytes: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def build_base64_payload(raw_bytes: bytes) -> str:
+    return base64.b64encode(raw_bytes).decode("ascii")
+
+
 def guess_media_mime(path: Path) -> str:
     guessed, _ = mimetypes.guess_type(path.name)
     if guessed:
@@ -633,6 +596,13 @@ def get_run_cache_key(run: PredictionRun) -> str:
 def get_dashboard_run_key(run: PredictionRun | ImageComparisonRun) -> str:
     if isinstance(run, ImageComparisonRun):
         return "comparison:" + "|".join(get_run_cache_key(item) for item in run.runs)
+    if isinstance(run, MultiModalRun):
+        parts = [get_run_cache_key(run)]
+        parts.extend(
+            f"{modality}:{get_run_cache_key(component)}"
+            for modality, component in sorted(run.component_runs.items())
+        )
+        return "multimodal:" + "|".join(parts)
     return get_run_cache_key(run)
 
 
@@ -656,12 +626,30 @@ def get_cached_animated_3d_html(
     return tp.cast(str, html_cache[html_key])
 
 
+def render_media_preview(
+    path: Path,
+    *,
+    kind: str,
+    preview_folder: Path | None = None,
+) -> None:
+    preview_path = path
+    try:
+        output_folder = preview_folder or (path.parent / "_preview_media")
+        preview_path = build_browser_media_proxy(
+            source_path=path,
+            output_folder=output_folder,
+        )
+    except Exception:
+        LOGGER.exception("Failed to build media preview proxy | path=%s", path)
+    payload = preview_path.read_bytes()
+    if kind == "video":
+        st.video(payload)
+    else:
+        st.audio(payload)
+
+
 def render_raw_timestep_table(run: PredictionRun, *, height: int = 430) -> None:
-    st.markdown("**Donnees par timestep**")
     st.dataframe(build_raw_timestep_frame(run), width="stretch", height=height)
-    st.caption(
-        "Table brute envoyable au chat: temps, texte aligne quand il existe, et statistiques numeriques de prediction."
-    )
 
 
 def get_cached_openai_context_bundle(
@@ -691,15 +679,9 @@ def render_openai_chat_panel(
     max_images: int,
 ) -> None:
     with st.container(border=True):
-        section_head(
-            "OpenAI analyst",
-            "Chat lateral pour interpreter le run avec GPT-5.4 a partir des timesteps et des stats.",
-            kicker="Chat",
-        )
+        section_head("Analyse GPT", kicker="Chat")
         if not api_key.strip():
-            st.info(
-                "Renseignez `OPENAI_API_KEY` dans la sidebar ou dans l'environnement pour activer le chat."
-            )
+            st.info("Clé OpenAI : sidebar ou `OPENAI_API_KEY`.")
             return
 
         run_key = get_dashboard_run_key(run)
@@ -711,10 +693,7 @@ def render_openai_chat_panel(
                 "previous_response_id": None,
             },
         )
-        chat_meta = st.columns(2, gap="small")
-        chat_meta[0].metric("Model", model)
-        chat_meta[1].metric("Images", int(max_images))
-        st.caption("Le prompt systeme demande une lecture prudente: patterns corticaux, valence plausible, emotions candidates et incertitudes obligatoires.")
+        st.caption(f"{model} · {int(max_images)} img")
         if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
             LOGGER.info("OpenAI chat reset | run=%s", run_key)
             sessions[run_key] = {"messages": [], "previous_response_id": None}
@@ -726,7 +705,7 @@ def render_openai_chat_panel(
             max_images=max_images,
         )
         context_text, _, labels = context_bundle
-        with st.expander("Contexte envoye au modele", expanded=False):
+        with st.expander("Contexte", expanded=False):
             st.markdown(
                 "\n".join(f"- {label}" for label in labels)
                 if labels
@@ -738,10 +717,7 @@ def render_openai_chat_panel(
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        prompt = st.chat_input(
-            "Demandez a GPT d'expliquer ce run...",
-            key=f"chat_input_{run_key}",
-        )
+        prompt = st.chat_input("Message…", key=f"chat_input_{run_key}")
         if not prompt:
             return
 
@@ -781,7 +757,7 @@ def render_openai_chat_panel(
                 st.exception(exc)
                 return
             if labels and session.get("previous_response_id") is None:
-                st.caption("Contexte envoye: " + " | ".join(labels))
+                st.caption(" · ".join(labels))
             st.markdown(reply)
             LOGGER.info(
                 "OpenAI chat reply received | run=%s | model=%s | chars=%s",
@@ -794,10 +770,19 @@ def render_openai_chat_panel(
         session["previous_response_id"] = response_id
 
 
-def build_synced_player_html(run: PredictionRun) -> str:
+def build_synced_player_html(run: PredictionRun, *, cache_folder: Path) -> str:
     if run.source_path is None or run.input_kind not in {"video", "audio"}:
         raise ValueError("Synced playback is only available for audio and video runs with a source file.")
-    media_uri = build_data_uri(run.source_path.read_bytes(), guess_media_mime(run.source_path))
+    media_path = run.source_path
+    try:
+        media_path = build_browser_media_proxy(
+            source_path=run.source_path,
+            output_folder=cache_folder / "sync_media",
+        )
+    except Exception:
+        LOGGER.exception("Failed to build browser media proxy | source=%s", run.source_path)
+    media_bytes = media_path.read_bytes()
+    media_mime = guess_media_mime(media_path)
     timeline = collect_timestep_metadata(run)
     frame_uris = [
         build_data_uri(
@@ -817,76 +802,197 @@ def build_synced_player_html(run: PredictionRun) -> str:
             }
             for idx, item in enumerate(timeline)
         ],
+        "media": {
+            "mime": media_mime,
+            "uri": build_data_uri(media_bytes, media_mime),
+            "kind": run.input_kind,
+            "name": media_path.name,
+        },
     }
     payload_json = json.dumps(payload)
-    media_tag = "video" if run.input_kind == "video" else "audio"
+    brain_markup = """
+        <div class="sync-brain-wrap">
+          <img id="tribe-brain" class="sync-brain" alt="TRIBE v2 predicted brain activity" />
+          <div id="tribe-badge" class="sync-badge">Timestep 1</div>
+        </div>
+    """
+    if run.input_kind == "video":
+        stage_class = "sync-stage sync-stage-video"
+        media_markup = """
+          <video id="tribe-media" class="sync-media sync-media-video" preload="metadata" playsinline controls></video>
+        """
+        stage_markup = media_markup + brain_markup
+    else:
+        stage_class = "sync-stage sync-stage-audio"
+        media_markup = """
+          <audio id="tribe-media" class="sync-media sync-media-audio" preload="metadata" controls></audio>
+        """
+        stage_markup = media_markup + brain_markup
     return f"""
-    <div style="font-family: ui-sans-serif, system-ui, sans-serif; color: #171717;">
+    <div style="font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #09090b;">
       <style>
-        .sync-wrap {{
-          display: grid;
-          grid-template-columns: minmax(320px, 1.2fr) minmax(320px, 1fr);
-          gap: 18px;
-          align-items: start;
-        }}
         .sync-card {{
-          border: 1px solid rgba(23, 23, 23, 0.10);
-          border-radius: 18px;
-          padding: 14px;
-          background: rgba(255, 250, 242, 0.92);
-          box-shadow: 0 8px 20px rgba(23, 23, 23, 0.05);
-        }}
-        .sync-card h4 {{
-          margin: 0 0 10px 0;
-          font-size: 15px;
+          border: 1px solid #e4e4e7;
+          border-radius: 8px;
+          padding: 10px 12px;
+          background: #fff;
         }}
         .sync-meta {{
-          color: #665f57;
-          font-size: 13px;
-          margin-top: 10px;
+          color: #71717a;
+          font-size: 11px;
+          margin-top: 6px;
         }}
         .sync-text {{
-          margin-top: 10px;
-          min-height: 56px;
-          color: #171717;
-          line-height: 1.45;
-          font-size: 14px;
+          margin-top: 8px;
+          min-height: 44px;
+          color: #09090b;
+          line-height: 1.4;
+          font-size: 12px;
           white-space: pre-wrap;
         }}
-        .sync-slider {{
+        .sync-stage {{
+          margin-top: 6px;
+        }}
+        .sync-stage-video {{
+          display: grid;
+          grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1fr);
+          gap: 10px;
+          align-items: start;
+        }}
+        .sync-stage-audio {{
+          display: grid;
+          gap: 10px;
+        }}
+        .sync-media {{
           width: 100%;
-          margin-top: 10px;
+          display: block;
+          border-radius: 6px;
+          border: 1px solid #e4e4e7;
+          background: #09090b;
+        }}
+        .sync-media-video {{
+          aspect-ratio: 16 / 9;
+          object-fit: cover;
+        }}
+        .sync-media-audio {{
+          background: #fafafa;
+        }}
+        .sync-brain-wrap {{
+          position: relative;
         }}
         .sync-brain {{
           width: 100%;
-          border-radius: 14px;
-          background: white;
-          border: 1px solid rgba(23, 23, 23, 0.08);
+          border-radius: 6px;
+          background: #fafafa;
+          border: 1px solid #e4e4e7;
+          display: block;
+        }}
+        .sync-badge {{
+          position: absolute;
+          left: 8px;
+          bottom: 8px;
+          padding: 4px 8px;
+          border-radius: 4px;
+          background: #18181b;
+          color: #fafafa;
+          font-size: 11px;
+          font-weight: 600;
+        }}
+        .sync-controls {{
+          display: grid;
+          grid-template-columns: auto auto minmax(140px, 1fr) auto;
+          gap: 8px;
+          align-items: center;
+          margin-top: 8px;
+        }}
+        .sync-btn {{
+          border: 1px solid #e4e4e7;
+          border-radius: 6px;
+          background: #fff;
+          padding: 6px 12px;
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+        }}
+        .sync-btn:hover {{
+          border-color: #a1a1aa;
+        }}
+        .sync-slider {{
+          width: 100%;
+        }}
+        .sync-time {{
+          color: #71717a;
+          font-size: 11px;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }}
+        .sync-error {{
+          margin-top: 8px;
+          color: #dc2626;
+          font-size: 12px;
+        }}
+        @media (max-width: 760px) {{
+          .sync-stage-video {{
+            grid-template-columns: 1fr;
+          }}
+          .sync-controls {{
+            grid-template-columns: 1fr 1fr;
+          }}
+          .sync-slider {{
+            grid-column: 1 / -1;
+          }}
+          .sync-time {{
+            grid-column: 1 / -1;
+          }}
         }}
       </style>
-      <div class="sync-wrap">
-        <div class="sync-card">
-          <h4>{'Video source' if run.input_kind == 'video' else 'Audio source'}</h4>
-          <{media_tag} id="tribe-media" src="{media_uri}" controls loop playsinline style="width:100%; border-radius: 14px; {'max-height: 340px; object-fit: contain;' if run.input_kind == 'video' else ''}"></{media_tag}>
-          <div id="tribe-meta" class="sync-meta"></div>
-          <div id="tribe-text" class="sync-text"></div>
+      <div class="sync-card">
+        <div class="{stage_class}">
+          {stage_markup}
         </div>
-        <div class="sync-card">
-          <h4>Cerveau predit en temps reel</h4>
-          <img id="tribe-brain" class="sync-brain" alt="TRIBE v2 predicted brain activity" />
-          <div class="sync-meta">La carte change avec le temps de lecture du media. Le pas temporel suit les segments predits du modele.</div>
+        <div id="tribe-meta" class="sync-meta"></div>
+        <div id="tribe-text" class="sync-text"></div>
+        <div class="sync-controls">
+          <button id="tribe-play" class="sync-btn" type="button">Play</button>
+          <button id="tribe-pause" class="sync-btn" type="button">Pause</button>
+          <input id="tribe-scrub" class="sync-slider" type="range" min="0" max="1" step="0.01" value="0" />
+          <div id="tribe-time" class="sync-time">0.00s / 0.00s</div>
         </div>
+        <div class="sync-meta">{html.escape(media_path.name)} · {html.escape(run.input_kind)}</div>
+        <div id="tribe-error" class="sync-error" style="display:none;"></div>
       </div>
       <script>
         const payload = {payload_json};
         const steps = payload.timesteps;
         const player = document.getElementById("tribe-media");
         const brain = document.getElementById("tribe-brain");
+        const badge = document.getElementById("tribe-badge");
         const meta = document.getElementById("tribe-meta");
         const text = document.getElementById("tribe-text");
+        const playButton = document.getElementById("tribe-play");
+        const pauseButton = document.getElementById("tribe-pause");
+        const scrub = document.getElementById("tribe-scrub");
+        const time = document.getElementById("tribe-time");
+        const error = document.getElementById("tribe-error");
         let activeIndex = -1;
 
+        function showError(message) {{
+          error.style.display = "block";
+          error.textContent = message;
+        }}
+
+        function hideError() {{
+          error.style.display = "none";
+          error.textContent = "";
+        }}
+
+        function formatTime(value) {{
+          const safe = Number.isFinite(value) ? Number(value) : 0;
+          return `${{safe.toFixed(2)}}s`;
+        }}
+
         function findStepIndex(currentTime) {{
+          if (!steps.length) return 0;
           for (let i = 0; i < steps.length; i += 1) {{
             const start = Number(steps[i].start || 0);
             const end = start + Number(steps[i].duration || 1);
@@ -904,20 +1010,58 @@ def build_synced_player_html(run: PredictionRun) -> str:
           brain.src = step.brainUri;
           const end = Number(step.start) + Number(step.duration);
           meta.textContent = `Timestep ${{index + 1}} / ${{steps.length}} | ${{Number(step.start).toFixed(2)}}s - ${{end.toFixed(2)}}s`;
-          text.textContent = step.text ? step.text : "Pas de texte aligne pour ce segment.";
+          badge.textContent = `Timestep ${{index + 1}}`;
+          text.textContent = step.text ? step.text : "—";
         }}
 
         function syncToPlayer() {{
-          if (!steps.length) return;
-          renderStep(findStepIndex(player.currentTime || 0));
-          requestAnimationFrame(syncToPlayer);
+          const currentTime = player.currentTime || 0;
+          renderStep(findStepIndex(currentTime));
+          if (Number.isFinite(player.duration) && player.duration > 0) {{
+            scrub.max = String(player.duration);
+            time.textContent = `${{formatTime(currentTime)}} / ${{formatTime(player.duration)}}`;
+          }} else {{
+            time.textContent = `${{formatTime(currentTime)}} / 0.00s`;
+          }}
+          if (document.activeElement !== scrub) {{
+            scrub.value = String(currentTime);
+          }}
         }}
 
-        player.addEventListener("seeked", () => renderStep(findStepIndex(player.currentTime || 0)));
-        player.addEventListener("timeupdate", () => renderStep(findStepIndex(player.currentTime || 0)));
+        if (!steps.length) {{
+          showError("Aucun timestep synchronisable n'a ete genere pour ce run.");
+        }}
+
+        player.addEventListener("loadedmetadata", () => {{
+          hideError();
+          scrub.max = String(Number.isFinite(player.duration) ? player.duration : 1);
+          syncToPlayer();
+        }});
+        player.addEventListener("loadeddata", syncToPlayer);
+        player.addEventListener("canplay", hideError);
+        player.addEventListener("seeked", syncToPlayer);
+        player.addEventListener("timeupdate", syncToPlayer);
+        player.addEventListener("play", syncToPlayer);
+        player.addEventListener("error", () => {{
+          showError("Impossible de lire le media source dans le navigateur.");
+        }});
+        scrub.addEventListener("input", () => {{
+          player.currentTime = Number(scrub.value || 0);
+          syncToPlayer();
+        }});
+        playButton.addEventListener("click", async () => {{
+          try {{
+            await player.play();
+          }} catch (err) {{
+            showError("La lecture a ete refusee ou le media est incompatible.");
+          }}
+        }});
+        pauseButton.addEventListener("click", () => player.pause());
+
+        player.src = payload.media.uri;
+        player.load();
         renderStep(0);
         syncToPlayer();
-        player.play().catch(() => {{}});
       </script>
     </div>
     """
@@ -926,7 +1070,7 @@ def build_synced_player_html(run: PredictionRun) -> str:
 def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
     whisperx_available = ExtractWordsFromAudio.whisperx_available()
     with st.sidebar:
-        st.header("Configuration")
+        st.markdown('<p class="tribe-sidebar-label">Modèle</p>', unsafe_allow_html=True)
         checkpoint = st.text_input("Checkpoint", value="facebook/tribev2")
         device = st.selectbox("Device", options=["auto", "cuda", "cpu"], index=1)
         num_workers = st.number_input(
@@ -978,17 +1122,9 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
             value=6,
             step=1,
         )
-        if not whisperx_available:
-            st.info(
-                "Transcription desactivee: WhisperX n'est pas detecte dans l'environnement actif."
-            )
         st.divider()
-        st.header("Chat OpenAI")
-        openai_model = st.text_input(
-            "Modele OpenAI",
-            value=DEFAULT_OPENAI_CHAT_MODEL,
-            help="Le guide modeles OpenAI recommande gpt-5.4 pour les cas complexes et multimodaux.",
-        )
+        st.markdown('<p class="tribe-sidebar-label">OpenAI</p>', unsafe_allow_html=True)
+        openai_model = st.text_input("Modèle chat", value=DEFAULT_OPENAI_CHAT_MODEL)
         openai_reasoning = st.selectbox(
             "Effort de raisonnement",
             options=["low", "medium", "high", "xhigh"],
@@ -1010,16 +1146,7 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
             "OPENAI_API_KEY",
             value="",
             type="password",
-            help="Cle utilisee par le panneau de chat lateral. Laissez vide pour utiliser la variable d'environnement.",
-            placeholder="Utilise OPENAI_API_KEY si laisse vide",
-        )
-        if os.getenv("OPENAI_API_KEY", ""):
-            st.caption("Variable d'environnement OPENAI_API_KEY detectee. Laissez le champ vide pour l'utiliser.")
-        st.caption(
-            "Le dashboard prefere `meta-llama/Llama-3.2-3B` pour rester aligné "
-            "avec le repo d'origine, puis repasse automatiquement sur "
-            "`unsloth/Llama-3.2-3B` si le repo gated n'est pas accessible "
-            "dans l'environnement courant."
+            placeholder="Env si vide",
         )
 
     options = {
@@ -1043,11 +1170,7 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
     request: dict[str, object] = {}
     launch_pressed = False
     with st.container(border=True):
-        section_head(
-            "Input workspace",
-            "Choisissez une seule modalite par run. L'etat actif remonte dans le header, pas dans des panneaux lateraux redondants.",
-            kicker="Source",
-        )
+        section_head("Source", kicker="Entrée")
         tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
         with tabs[0]:
             video_file = st.file_uploader(
@@ -1055,20 +1178,24 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
             )
             if video_file is not None:
                 request["video_path"] = save_upload(video_file, cache_folder / "uploads")
-                st.video(video_file.getvalue())
+                render_media_preview(
+                    Path(tp.cast(str | Path, request["video_path"])),
+                    kind="video",
+                    preview_folder=cache_folder / "preview_media",
+                )
         with tabs[1]:
             audio_file = st.file_uploader(
                 "Importer un audio", type=["wav", "mp3", "flac", "ogg"]
             )
             if audio_file is not None:
                 request["audio_path"] = save_upload(audio_file, cache_folder / "uploads")
-                st.audio(audio_file.getvalue())
+                render_media_preview(
+                    Path(tp.cast(str | Path, request["audio_path"])),
+                    kind="audio",
+                    preview_folder=cache_folder / "preview_media",
+                )
         with tabs[2]:
-            text_input = st.text_area(
-                "Texte brut",
-                placeholder="Collez un script, une transcription ou un prompt narratif.",
-                height=176,
-            )
+            text_input = st.text_area("Texte", placeholder="…", height=140)
             text_file = st.file_uploader("ou importer un .txt", type=["txt"])
             if text_file is not None:
                 text_value = text_file.getvalue().decode("utf-8")
@@ -1093,23 +1220,12 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
                     with col:
                         render_bounded_image(file.getvalue(), caption=file.name, max_height=240)
 
-        action_col, button_col = st.columns([1.45, 0.78], gap="large")
+        action_col, button_col = st.columns([1.35, 0.72], gap="medium")
         with action_col:
             st.markdown(
-                """
-                <div class="tribe-slimbar">
-                  <div>
-                    <div class="tribe-slimbar-title">Run en un clic</div>
-                    <div class="tribe-slimbar-copy">
-                      Une seule source active a la fois. Preparation, inference, vues 2D, 3D et exports se chainent automatiquement.
-                    </div>
-                  </div>
-                  <div class="tribe-pill">
-                    <div class="tribe-pill-label">Source active</div>
-                    <div class="tribe-pill-value">"""
-                + html.escape(_format_request_label(request))
-                + """</div>
-                  </div>
+                f"""
+                <div class="tribe-runrow">
+                  <span>Active : <strong>{html.escape(_format_request_label(request))}</strong></span>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1119,20 +1235,11 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
                 render_busy_prediction_button()
             else:
                 launch_pressed = st.button(
-                    "Lancer la prediction",
+                    "Lancer",
                     type="primary",
                     width="stretch",
                     key="launch_prediction",
                 )
-            st.markdown(
-                f"""
-                <div class="tribe-progress-caption">
-                  Checkpoint <strong>{html.escape(str(checkpoint).split('/')[-1])}</strong><br/>
-                  Chat <strong>{html.escape(openai_model)}</strong>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
     return request, options, launch_pressed
 
 
@@ -1151,11 +1258,11 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
 
     if launch_pressed:
         if not request:
-            st.error("Importez d'abord une video, un audio ou un texte.")
+            st.error("Importez d'abord une video, un audio, un texte ou une image.")
             return
-        active_inputs = [key for key, value in request.items() if value]
-        if len(active_inputs) != 1:
-            st.error("Choisissez une seule modalite a la fois: video, audio, texte ou images.")
+        validation_error = _validate_request_modalities(request)
+        if validation_error:
+            st.error(validation_error)
             return
         st.session_state["prediction_running"] = True
         st.session_state["pending_prediction_request"] = dict(request)
@@ -1211,8 +1318,17 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
             options["num_workers"],
             options["text_model_name"],
         )
-        if "image_paths" in request:
-            image_paths = [Path(p) for p in request["image_paths"]]
+        image_paths = [Path(p) for p in tp.cast(list[Path], request.get("image_paths") or [])]
+        has_multimodal = sum(
+            int(bool(value))
+            for value in (
+                request.get("video_path"),
+                request.get("audio_path"),
+                request.get("text"),
+                image_paths,
+            )
+        ) > 1
+        if len(image_paths) == 2:
             image_runs: list[PredictionRun] = []
             total_images = max(1, len(image_paths))
             for idx, image_path in enumerate(image_paths, start=1):
@@ -1238,6 +1354,27 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
                     )
                 )
             run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
+        elif has_multimodal:
+            update_progress(2)
+            combined_events, prepared_components = build_multimodal_events(
+                cache_folder=cache_folder,
+                text=tp.cast(str | None, request.get("text")),
+                audio_path=tp.cast(str | Path | None, request.get("audio_path")),
+                video_path=tp.cast(str | Path | None, request.get("video_path")),
+                image_path=image_paths[0] if image_paths else None,
+                transcribe=options["transcribe"],
+                direct_text=options["direct_text"],
+                seconds_per_word=options["seconds_per_word"],
+                max_context_words=options["max_context_words"],
+                image_duration=options["image_duration"],
+                image_fps=options["image_fps"],
+            )
+            update_progress(3)
+            run = predict_multimodal_from_prepared_events(
+                model,
+                combined_events,
+                prepared_components=prepared_components,
+            )
         else:
             update_progress(2)
             events, input_kind = prepare_events(
@@ -1246,13 +1383,13 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
                 direct_text=options["direct_text"],
                 seconds_per_word=options["seconds_per_word"],
                 max_context_words=options["max_context_words"],
-                **request,
+                text=tp.cast(str | None, request.get("text")),
+                audio_path=tp.cast(str | Path | None, request.get("audio_path")),
+                video_path=tp.cast(str | Path | None, request.get("video_path")),
+                image_path=image_paths[0] if image_paths else None,
             )
             update_progress(3)
-            source_path = next(
-                (value for key, value in request.items() if key.endswith("_path")),
-                None,
-            )
+            source_path = request.get("video_path") or request.get("audio_path") or (image_paths[0] if image_paths else None)
             raw_text = request.get("text")
             run = predict_from_prepared_events(
                 model,
@@ -1273,6 +1410,14 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
                 True,
                 len(run.runs),
             )
+        elif isinstance(run, MultiModalRun):
+            LOGGER.info(
+                "Prediction completed | input_kind=%s | modalities=%s | timesteps=%s | vertices=%s",
+                run.input_kind,
+                ",".join(sorted(run.component_runs)),
+                len(run.preds),
+                run.preds.shape[1],
+            )
         else:
             LOGGER.info(
                 "Prediction completed | input_kind=%s | timesteps=%s | vertices=%s",
@@ -1281,7 +1426,7 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
                 run.preds.shape[1],
             )
         clear_prediction_job_state()
-        st.session_state["prediction_notice"] = "Prediction prete. Les vues et exports sont disponibles plus bas."
+        st.session_state["prediction_notice"] = "Prêt."
         st.rerun()
     except Exception as exc:
         LOGGER.exception("Prediction failed | source=%s", _format_request_label(request))
@@ -1293,91 +1438,134 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
         st.rerun()
 
 
-def render_input_preview(run: PredictionRun) -> None:
+def render_input_preview(run: PredictionRun, *, cache_folder: Path | None = None) -> None:
+    if isinstance(run, MultiModalRun):
+        labels: list[str] = []
+        renderers: list[tp.Callable[[], None]] = []
+
+        if "video" in run.source_paths:
+            video_path = run.source_paths["video"]
+            labels.append("Vidéo")
+            renderers.append(
+                lambda path=video_path: render_media_preview(
+                    path,
+                    kind="video",
+                    preview_folder=(cache_folder / "preview_media") if cache_folder else None,
+                )
+            )
+        if "audio" in run.source_paths:
+            audio_path = run.source_paths["audio"]
+            labels.append("Audio")
+            renderers.append(
+                lambda path=audio_path: render_media_preview(
+                    path,
+                    kind="audio",
+                    preview_folder=(cache_folder / "preview_media") if cache_folder else None,
+                )
+            )
+        if run.raw_text:
+            labels.append("Texte")
+            renderers.append(lambda text=run.raw_text: st.text_area("Texte", value=text, height=180))
+        if "image" in run.source_paths:
+            image_path = run.source_paths["image"]
+            labels.append("Image")
+            renderers.append(
+                lambda path=image_path: render_bounded_image(
+                    path.read_bytes(),
+                    caption=path.name,
+                    max_height=260,
+                )
+            )
+        if not labels:
+            st.caption("—")
+            return
+        tabs = st.tabs(labels)
+        for tab, renderer in zip(tabs, renderers):
+            with tab:
+                renderer()
+        return
     if run.raw_text:
-        st.text_area("Texte", value=run.raw_text, height=220)
+        st.text_area("Texte", value=run.raw_text, height=180)
     elif run.source_path and run.input_kind == "video":
-        st.video(run.source_path.read_bytes())
+        render_media_preview(
+            run.source_path,
+            kind="video",
+            preview_folder=(cache_folder / "preview_media") if cache_folder else None,
+        )
     elif run.source_path and run.input_kind == "audio":
-        st.audio(run.source_path.read_bytes())
+        render_media_preview(
+            run.source_path,
+            kind="audio",
+            preview_folder=(cache_folder / "preview_media") if cache_folder else None,
+        )
     elif run.source_path and run.input_kind == "image":
         render_bounded_image(
             run.source_path.read_bytes(),
             caption=run.source_path.name,
-            max_height=320,
+            max_height=280,
         )
     else:
-        st.caption("Apercu non disponible pour cette entree.")
+        st.caption("—")
 
 
 def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -> None:
     if isinstance(run, ImageComparisonRun):
         return comparison_results_panel(run)
 
-    run_key = get_run_cache_key(run)
+    run_key = get_dashboard_run_key(run)
     summary = summarize_predictions(run.preds)
+    summary_chart = summary.set_index("timestep")[["mean_abs", "std"]]
+    chart_values = summary_chart.to_numpy(dtype=float) if not summary_chart.empty else np.empty((0, 2))
+    has_valid_summary_chart = summary_chart.shape[0] > 0 and np.isfinite(chart_values).all()
     with st.container(border=True):
-        section_head(
-            "Run status",
-            "Resume numerique du run courant.",
-            kicker="Metrics",
-        )
+        section_head("Run", kicker="Stats")
         metric_cols = st.columns(5, gap="small")
         metric_cols[0].metric("Timesteps", len(run.preds))
         metric_cols[1].metric("Vertices", run.preds.shape[1])
-        metric_cols[2].metric("Modalite", run.input_kind.capitalize())
+        metric_cols[2].metric("Modalite", _format_run_input_kind(run))
         metric_cols[3].metric("Evenements", len(run.events))
         metric_cols[4].metric("Mean abs", f"{float(summary['mean_abs'].mean()):.4f}")
+        if isinstance(run, MultiModalRun):
+            st.caption("Overlay multimodal: rouge = visuel, vert = audio, bleu = texte.")
 
     workspace_col, inspect_col = st.columns([1.72, 1.0], gap="large")
     with workspace_col:
         with st.container(border=True):
-            section_head(
-                "Timeline surface",
-                "Courbe globale et lecture cerebrale en boucle dans le meme espace de travail.",
-                kicker="Workspace",
-            )
+            section_head("Signal + playback", kicker="Vue")
             chart_col, animation_col = st.columns([0.9, 1.15], gap="large")
             with chart_col:
-                st.line_chart(
-                    summary.set_index("timestep")[["mean_abs", "std"]],
-                    height=248,
-                    width="stretch",
-                )
+                if has_valid_summary_chart:
+                    st.line_chart(
+                        summary_chart,
+                        height=248,
+                        width="stretch",
+                    )
+                else:
+                    st.caption("Courbe indisponible.")
             animation_cache = st.session_state.setdefault("brain_gif_bytes", {})
-            animation_key = get_run_cache_key(run)
+            animation_key = get_dashboard_run_key(run)
             if animation_key not in animation_cache:
                 with st.spinner("Generation de l'animation cerebrale..."):
                     animation_cache[animation_key] = render_prediction_gif(run)
             with animation_col:
-                st.image(
-                    animation_cache[animation_key],
-                    caption="Brain playback",
-                    width="stretch",
-                )
+                caption = "GIF fusion RGB" if isinstance(run, MultiModalRun) else "GIF"
+                st.image(animation_cache[animation_key], caption=caption, width="stretch")
 
         with st.container(border=True):
-            section_head(
-                "Deep views",
-                "Vues avancees et exports media.",
-                kicker="Views",
-            )
-            tab_labels = ["3D anime", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
+            section_head("Vues", kicker="Exports")
+            include_mp4 = not isinstance(run, MultiModalRun)
+            tab_labels = ["3D", "MP4", "Mosaique", "Evenements"]
             synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
             if synced_media_available:
-                tab_labels = ["Lecteur synchronise"] + tab_labels
+                tab_labels = ["Sync"] + tab_labels
             tabs = st.tabs(tab_labels)
             tab_offset = 0
 
             if synced_media_available:
                 with tabs[0]:
                     sync_cache = st.session_state.setdefault("sync_player_html", {})
-                    sync_key = run_key
-                    if st.button(
-                        "Preparer le lecteur synchronise",
-                        width="stretch",
-                        key=f"prepare_sync_{run_key}",
-                    ):
+                    sync_key = f"{run_key}:sync-visible-media-v2"
+                    if st.button("Préparer Sync", width="stretch", key=f"prepare_sync_{run_key}"):
                         LOGGER.info("Preparing synced player | run=%s", run_key)
                         sync_progress_host = st.empty()
                         _, sync_progress = render_action_progress(
@@ -1389,23 +1577,18 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                             ],
                         )
                         sync_progress(1)
-                        sync_cache[sync_key] = build_synced_player_html(run)
+                        sync_cache[sync_key] = build_synced_player_html(run, cache_folder=cache_folder)
                         sync_progress(2)
                     sync_html = sync_cache.get(sync_key)
                     if sync_html:
-                        components.html(sync_html, height=860, scrolling=False)
-                    else:
-                        st.caption("Associe le temps du media a la carte cerebrale predite.")
+                        components.html(sync_html, height=640, scrolling=False)
                     tab_offset = 1
 
             with tabs[tab_offset]:
                 html = get_cached_animated_3d_html(run)
-                components.html(html, height=860, scrolling=False)
-                st.caption(
-                    "Lecture auto active. Faites tourner le cerveau avec la souris, puis utilisez Pause pour figer un instant precis."
-                )
+                components.html(html, height=820, scrolling=False)
                 st.download_button(
-                    "Telecharger la vue 3D HTML",
+                    "HTML 3D",
                     data=html.encode("utf-8"),
                     file_name=f"tribev2_{run.input_kind}_brain_animation.html",
                     mime="text/html",
@@ -1433,7 +1616,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                 )
                 export_key = f"{max_timesteps}:{fps_options[fps_label]}"
                 video_cache = st.session_state.setdefault("video_exports", {})
-                if st.button("Generer le MP4", width="stretch", key=f"export_mp4_{run_key}"):
+                if st.button("Générer MP4", width="stretch", key=f"export_mp4_{run_key}"):
                     LOGGER.info(
                         "Generating MP4 | run=%s | timesteps=%s | fps=%s",
                         run_key,
@@ -1464,19 +1647,16 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                     video_path = Path(video_path_str)
                     st.video(video_path.read_bytes())
                     st.download_button(
-                        "Telecharger le MP4",
+                        "MP4",
                         data=video_path.read_bytes(),
                         file_name=video_path.name,
                         mime="video/mp4",
                         width="stretch",
                     )
-                else:
-                    st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
-
             with tabs[tab_offset + 2]:
                 mosaic_cache = st.session_state.setdefault("mosaic_figures", {})
                 mosaic_key = f"mosaic:{run_key}"
-                if st.button("Generer la mosaique", width="stretch", key=f"mosaic_{run_key}"):
+                if st.button("Mosaïque", width="stretch", key=f"mosaic_{run_key}"):
                     st.session_state["mosaic_requested"] = True
                     if mosaic_key not in mosaic_cache:
                         LOGGER.info("Generating mosaic | run=%s", run_key)
@@ -1501,40 +1681,32 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
 
     with inspect_col:
         with st.container(border=True):
-            section_head(
-                "Inspector",
-                "Apercu de la source et donnees brutes.",
-                kicker="Inspector",
-            )
-            preview_tab, data_tab = st.tabs(["Preview", "Timesteps"])
+            section_head("Inspecteur", kicker="Source")
+            preview_tab, data_tab = st.tabs(["Aperçu", "Timesteps"])
             with preview_tab:
-                render_input_preview(run)
+                render_input_preview(run, cache_folder=cache_folder)
             with data_tab:
                 render_raw_timestep_table(run, height=420)
 
         with st.container(border=True):
-            section_head(
-                "Exports",
-                "Telechargements rapides.",
-                kicker="Output",
-            )
+            section_head("Fichiers", kicker="DL")
             export_cols = st.columns(3)
             export_cols[0].download_button(
-                "Predictions .npy",
+                ".npy",
                 data=build_npy_download(run.preds),
                 file_name="tribev2_predictions.npy",
                 mime="application/octet-stream",
                 width="stretch",
             )
             export_cols[1].download_button(
-                "Events .csv",
+                "events.csv",
                 data=run.events.to_csv(index=False).encode("utf-8"),
                 file_name="tribev2_events.csv",
                 mime="text/csv",
                 width="stretch",
             )
             export_cols[2].download_button(
-                "Resume .csv",
+                "résumé.csv",
                 data=summary.to_csv(index=False).encode("utf-8"),
                 file_name="tribev2_summary.csv",
                 mime="text/csv",
@@ -1550,11 +1722,7 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
         common_timesteps,
     )
     with st.container(border=True):
-        section_head(
-            "Image comparison",
-            "Deux colonnes synchrones pour comparer rapidement les patterns.",
-            kicker="Compare",
-        )
+        section_head("Comparaison images", kicker="2×")
         metric_cols = st.columns(4)
         metric_cols[0].metric("Images", len(run.runs))
         metric_cols[1].metric("Timesteps communs", common_timesteps)
@@ -1565,22 +1733,14 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
     for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
         with col:
             with st.container(border=True):
-                section_head(
-                    f"Image {idx}",
-                    "Preview, playback cortical et 3D orientable.",
-                    kicker="Panel",
-                )
+                section_head(f"Image {idx}", kicker="Img")
                 render_input_preview(item)
                 gif_cache = st.session_state.setdefault("brain_gif_bytes", {})
                 gif_key = get_run_cache_key(item)
                 if gif_key not in gif_cache:
                     with st.spinner(f"Generation de l'animation image {idx}..."):
                         gif_cache[gif_key] = render_prediction_gif(item)
-                st.image(
-                    gif_cache[gif_key],
-                    caption="Brain playback",
-                    width="stretch",
-                )
+                st.image(gif_cache[gif_key], caption="GIF", width="stretch")
                 image_html = get_cached_animated_3d_html(
                     item,
                     max_frames=18,
@@ -1589,16 +1749,16 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
                 )
                 components.html(image_html, height=690, scrolling=False)
                 st.download_button(
-                    f"3D HTML image {idx}",
+                    f"HTML 3D · {idx}",
                     data=image_html.encode("utf-8"),
                     file_name=f"tribev2_image_{idx}_brain_animation.html",
                     mime="text/html",
                     width="stretch",
                 )
-                with st.expander("Donnees par timestep", expanded=False):
+                with st.expander("Timesteps", expanded=False):
                     render_raw_timestep_table(item, height=260)
                 st.download_button(
-                    f"Predictions image {idx}",
+                    f".npy · {idx}",
                     data=build_npy_download(item.preds),
                     file_name=f"tribev2_image_{idx}_predictions.npy",
                     mime="application/octet-stream",
@@ -1610,10 +1770,10 @@ def main() -> None:
     configure_runtime_noise()
     apply_theme()
     hero_slot = st.empty()
-    cache_folder = Path(st.sidebar.text_input("Dossier cache", value="./cache"))
+    cache_folder = Path(st.sidebar.text_input("Cache", value="./cache"))
     log_path = configure_dashboard_logging(cache_folder)
     with st.sidebar:
-        st.caption(f"Log file: `{log_path}`")
+        st.caption(str(log_path))
     request, options, launch_pressed = input_panel(cache_folder)
     with hero_slot.container():
         hero(request, options, cache_folder)

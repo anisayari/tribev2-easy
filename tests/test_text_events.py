@@ -1,12 +1,14 @@
+import io
 from pathlib import Path
 import logging
 import warnings
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageSequence
 import torch
 
 from tribev2 import demo_utils as demo_utils_module
+from tribev2 import dashboard_app as dashboard_app_module
 from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
 from tribev2 import openai_chat as openai_chat_module
@@ -15,6 +17,7 @@ from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     FALLBACK_TEXT_MODEL,
     ImageComparisonRun,
+    MultiModalRun,
     PRIMARY_TEXT_MODEL,
     PredictionRun,
     build_explainability_report,
@@ -63,6 +66,47 @@ def test_prepare_events_supports_direct_text(tmp_path: Path):
     assert input_kind == "text"
     assert not events.empty
     assert set(events.type.unique()) == {"Word"}
+
+
+def test_dashboard_request_label_supports_multiple_modalities():
+    label = dashboard_app_module._format_request_label(
+        {
+            "video_path": Path("clip.mp4"),
+            "audio_path": Path("voice.wav"),
+            "text": "hello world",
+        }
+    )
+
+    assert label == "Vidéo + Audio + Texte"
+
+
+def test_multimodal_run_key_and_prompt_include_overlay_context():
+    events = build_text_events_from_text("hello world", seconds_per_word=1.0)
+    preds = np.zeros((2, 20484), dtype=float)
+    video_run = PredictionRun(events=events, preds=preds + 0.2, segments=[], input_kind="video")
+    text_run = PredictionRun(
+        events=events,
+        preds=preds + 0.4,
+        segments=[],
+        input_kind="text",
+        raw_text="hello world",
+    )
+    run = MultiModalRun(
+        events=events,
+        preds=preds + 0.1,
+        segments=[],
+        input_kind="multimodal",
+        raw_text="hello world",
+        component_runs={"video": video_run, "text": text_run},
+    )
+
+    key = dashboard_app_module.get_dashboard_run_key(run)
+    prompt = build_chat_system_prompt(run)
+    report = build_timestep_report_frame(run)
+
+    assert key.startswith("multimodal:")
+    assert "rouge pour le visuel" in prompt
+    assert report.iloc[0]["zone"] == "Fusion multimodale"
 
 
 def test_resolve_text_model_name_defaults_to_preferred_repo():
@@ -362,6 +406,62 @@ def test_render_prediction_gif_returns_bytes(monkeypatch):
     gif_bytes = render_prediction_gif(run, max_frames=3)
 
     assert gif_bytes[:6] in {b"GIF87a", b"GIF89a"}
+
+
+def test_render_prediction_gif_draws_timestep_badge(monkeypatch):
+    preds = np.zeros((3, 20484), dtype=float)
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="hello hope",
+    )
+
+    monkeypatch.setattr(
+        easy_module,
+        "render_brain_panel_image",
+        lambda *args, **kwargs: np.full((120, 180, 3), 180, dtype=np.uint8),
+    )
+
+    gif_bytes = render_prediction_gif(run, max_frames=3)
+    frame = next(ImageSequence.Iterator(Image.open(io.BytesIO(gif_bytes)))).convert("RGB")
+    badge_region = np.asarray(frame.crop((0, frame.height - 40, 80, frame.height)))
+
+    assert badge_region.std() > 0
+    assert not np.all(badge_region == 180)
+
+
+def test_build_synced_player_html_uses_single_media_card(tmp_path: Path, monkeypatch):
+    media_path = tmp_path / "sample.mp4"
+    media_path.write_bytes(b"fake-mp4")
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="video",
+        source_path=media_path,
+    )
+
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "build_browser_media_proxy",
+        lambda **kwargs: media_path,
+    )
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "render_brain_panel_bytes",
+        lambda *args, **kwargs: b"brain-jpeg",
+    )
+
+    html = dashboard_app_module.build_synced_player_html(run, cache_folder=tmp_path)
+
+    assert 'id="tribe-play"' in html
+    assert 'id="tribe-pause"' in html
+    assert 'id="tribe-media"' in html
+    assert 'class="sync-media sync-media-video"' in html
+    assert "Video source" not in html
+    assert "Cerveau predit en temps reel" not in html
 
 
 def test_render_animated_brain_3d_html_autoplays(monkeypatch):
