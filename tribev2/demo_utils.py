@@ -6,7 +6,9 @@
 
 """TribeModel for inference and utilities for building event DataFrames."""
 
+import gc
 import logging
+import os
 import re
 import typing as tp
 from pathlib import Path, PurePosixPath
@@ -15,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pydantic
 import requests
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import torch
 import yaml
 from einops import rearrange
@@ -45,6 +48,8 @@ VALID_SUFFIXES: dict[str, set[str]] = {
     "audio_path": {".wav", ".mp3", ".flac", ".ogg"},
     "video_path": {".mp4", ".avi", ".mkv", ".mov", ".webm"},
 }
+_HIDDEN_STATE_CPU_OFFLOAD_BYTES = 768 * 1024 * 1024
+_MEMORY_SAFE_PATCHED = False
 
 
 class _PortableUnsafeLoader(yaml.UnsafeLoader):
@@ -78,6 +83,99 @@ def _cuda_runtime_supported() -> bool:
         return f"{major}{minor}" in supported_arches
     except Exception:
         return False
+
+
+def _estimate_tensor_bytes(tensors: tp.Iterable[torch.Tensor]) -> int:
+    return sum(int(tensor.numel() * tensor.element_size()) for tensor in tensors)
+
+
+def _concat_hidden_states_cpu(states: tp.Sequence[torch.Tensor]) -> torch.Tensor:
+    cpu_states = [
+        state.detach().to(device="cpu", copy=True).unsqueeze(1) for state in states
+    ]
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return torch.cat(cpu_states, axis=1)
+
+
+def _concat_hidden_states_memory_safe(
+    states: tp.Sequence[torch.Tensor],
+    *,
+    label: str,
+) -> tuple[torch.Tensor, bool]:
+    state_list = list(states)
+    if not state_list:
+        raise RuntimeError(f"Cannot concatenate empty {label}.")
+    estimated_bytes = _estimate_tensor_bytes(state_list)
+    should_offload = any(state.is_cuda for state in state_list) and (
+        estimated_bytes >= _HIDDEN_STATE_CPU_OFFLOAD_BYTES
+    )
+    if should_offload:
+        logger.info(
+            "Offloading %s concat to CPU to avoid a %.2f GiB CUDA allocation spike.",
+            label,
+            estimated_bytes / (1024**3),
+        )
+        return _concat_hidden_states_cpu(state_list), True
+    try:
+        return torch.cat([state.unsqueeze(1) for state in state_list], axis=1), False
+    except torch.OutOfMemoryError:
+        logger.warning(
+            "CUDA OOM during %s concat; retrying on CPU. "
+            "A full Streamlit restart may still be needed to defragment memory.",
+            label,
+        )
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return _concat_hidden_states_cpu(state_list), True
+
+
+def _apply_memory_safe_extractor_patches() -> None:
+    global _MEMORY_SAFE_PATCHED
+    if _MEMORY_SAFE_PATCHED:
+        return
+
+    from neuralset.extractors import image as ns_image
+    from neuralset.extractors import video as ns_video
+
+    def _patched_predict_hidden_states(
+        self, images: np.ndarray, audio: np.ndarray | None = None
+    ) -> torch.Tensor:
+        pred = self.predict(images, audio)
+        if "xclip" in self.model_name:
+            is_mit = self.layer_type == "mit"
+            pred = pred.mit_output if is_mit else pred.vision_model_output
+        states = pred.hidden_states
+        out, used_cpu_offload = _concat_hidden_states_memory_safe(
+            states,
+            label=f"video hidden states ({self.model_name})",
+        )
+        if "xclip" in self.model_name and not self.layer_type:
+            out = out[[-1], ...]
+        del states
+        del pred
+        if used_cpu_offload and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return out
+
+    def _patched_extract_batched_latents(self, images: torch.Tensor) -> torch.Tensor:
+        states = self._get_hidden_states(images)
+        out, used_cpu_offload = _concat_hidden_states_memory_safe(
+            states,
+            label=f"image hidden states ({self.model_name})",
+        )
+        del states
+        if used_cpu_offload and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return out
+
+    ns_video._HFVideoModel.predict_hidden_states = _patched_predict_hidden_states
+    ns_image.HuggingFaceImage._extract_batched_latents = (
+        _patched_extract_batched_latents
+    )
+    _MEMORY_SAFE_PATCHED = True
 
 
 def download_file(url: str, path: str | Path) -> Path:
@@ -279,6 +377,7 @@ class TribeModel(TribeExperiment):
         TribeModel
             A ready-to-use model instance with weights loaded in eval mode.
         """
+        _apply_memory_safe_extractor_patches()
         if cache_folder is not None:
             Path(cache_folder).mkdir(parents=True, exist_ok=True)
         if device == "auto":

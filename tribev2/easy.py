@@ -14,6 +14,8 @@ import tempfile
 import typing as tp
 import unicodedata
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt

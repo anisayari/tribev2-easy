@@ -2,7 +2,9 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import torch
 
+from tribev2 import demo_utils as demo_utils_module
 from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
 from tribev2.eventstransforms import ExtractWordsFromAudio
@@ -306,3 +308,26 @@ def test_render_prediction_gif_returns_bytes(monkeypatch):
     gif_bytes = render_prediction_gif(run, max_frames=3)
 
     assert gif_bytes[:6] in {b"GIF87a", b"GIF89a"}
+
+
+def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):
+    original_cat = demo_utils_module.torch.cat
+    calls = {"count": 0}
+
+    def flaky_cat(tensors, axis=0):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise torch.OutOfMemoryError("synthetic oom")
+        return original_cat(tensors, axis=axis)
+
+    monkeypatch.setattr(demo_utils_module.torch, "cat", flaky_cat)
+    monkeypatch.setattr(demo_utils_module.torch.cuda, "is_available", lambda: False)
+
+    out, used_cpu_offload = demo_utils_module._concat_hidden_states_memory_safe(
+        [torch.zeros((1, 2, 3)), torch.ones((1, 2, 3))],
+        label="test hidden states",
+    )
+
+    assert calls["count"] == 2
+    assert used_cpu_offload is True
+    assert out.shape == (1, 2, 2, 3)
