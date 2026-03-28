@@ -313,6 +313,7 @@ def test_render_prediction_gif_returns_bytes(monkeypatch):
 
 def test_render_animated_brain_3d_html_autoplays(monkeypatch):
     class FakePlotter:
+        bg_darkness = 0.0
         _mesh = {
             "both": {
                 "coords": np.array(
@@ -324,6 +325,7 @@ def test_render_animated_brain_3d_html_autoplays(monkeypatch):
                     ]
                 ),
                 "faces": np.array([[0, 1, 2], [0, 2, 3]], dtype=int),
+                "bg_map": np.array([0.0, 0.35, 0.7, 1.0], dtype=float),
             }
         }
 
@@ -364,6 +366,7 @@ def test_render_animated_brain_3d_html_autoplays(monkeypatch):
     assert "Auto-play actif" in html
     assert "scene.camera.eye" in html
     assert "play();" in html
+    assert "vertexcolor" in html
 
 
 def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):

@@ -895,6 +895,7 @@ def render_animated_brain_3d_html(
     mesh: str = "fsaverage5",
     max_frames: int = 30,
     norm_percentile: int = 99,
+    vmin: float | None = 0.5,
     width: int = 980,
     height: int = 760,
 ) -> str:
@@ -913,8 +914,13 @@ def render_animated_brain_3d_html(
     reports = build_timestep_reports(run, indices=indices)
     frames: list[dict[str, tp.Any]] = []
     for idx, report in zip(indices, reports):
-        normalized = normalize_signal_for_display(run.preds[idx], percentile=norm_percentile)
-        intensity = np.round(plotter.get_stat_map(normalized)["both"], 4).tolist()
+        _, _, _, colors = _get_surface_render_data(
+            run.preds[idx],
+            mesh=mesh,
+            norm_percentile=norm_percentile,
+            cmap="fire",
+            vmin=vmin,
+        )
         frames.append(
             {
                 "index": idx,
@@ -924,7 +930,7 @@ def render_animated_brain_3d_html(
                 "summary": report["summary"],
                 "zone": report["zone"],
                 "valence": report["valence"],
-                "intensity": intensity,
+                "vertexcolor": np.round(colors * 255).astype(int).tolist(),
             }
         )
 
@@ -935,7 +941,6 @@ def render_animated_brain_3d_html(
         "i": faces[:, 0].tolist(),
         "j": faces[:, 1].tolist(),
         "k": faces[:, 2].tolist(),
-        "colorscale": _cmap_to_plotly_colorscale("fire"),
         "frames": frames,
         "frameDurationMs": max(
             180,
@@ -1081,11 +1086,7 @@ def render_animated_brain_3d_html(
           i: payload.i,
           j: payload.j,
           k: payload.k,
-          intensity: frames[0].intensity,
-          intensitymode: "vertex",
-          colorscale: payload.colorscale,
-          cmin: 0,
-          cmax: 1,
+          vertexcolor: frames[0].vertexcolor,
           flatshading: false,
           hoverinfo: "skip",
           showscale: false,
@@ -1128,7 +1129,7 @@ def render_animated_brain_3d_html(
           currentIndex = ((index % frames.length) + frames.length) % frames.length;
           const frame = frames[currentIndex];
           orbitTick += 1;
-          Plotly.restyle(plotDiv, {{intensity: [frame.intensity]}}, [0]);
+          Plotly.restyle(plotDiv, {{vertexcolor: [frame.vertexcolor]}}, [0]);
           Plotly.relayout(plotDiv, {{"scene.camera.eye": cameraEye(orbitTick)}});
           label.textContent = `Timestep ${{frame.index + 1}} / ${{frames.length}} | ${{Number(frame.start).toFixed(2)}}s`;
           progressFill.style.width = `${{((currentIndex + 1) / Math.max(frames.length, 1)) * 100}}%`;
