@@ -13,10 +13,12 @@ from tribev2.easy import (
     build_explainability_report,
     build_image_comparison_guide,
     build_result_interpretation,
+    build_timestep_report_frame,
     collect_timestep_metadata,
     describe_timestep,
     infer_affective_cues,
     prepare_events,
+    render_prediction_gif,
     resolve_text_model_name,
 )
 
@@ -265,3 +267,42 @@ def test_whisperx_detection_finds_executable_next_to_env(monkeypatch, tmp_path: 
 
     assert cmd is not None
     assert cmd[0].endswith("uvx.exe")
+
+
+def test_build_timestep_report_frame_contains_interpretation_columns():
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :128] = 1.0
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="hello hope",
+    )
+
+    frame = build_timestep_report_frame(run)
+
+    assert list(frame.columns)[:4] == ["timestep", "start_s", "duration_s", "text"]
+    assert "zone" in frame.columns
+    assert "valence" in frame.columns
+
+
+def test_render_prediction_gif_returns_bytes(monkeypatch):
+    preds = np.zeros((3, 20484), dtype=float)
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="hello hope",
+    )
+
+    monkeypatch.setattr(
+        easy_module,
+        "render_brain_panel_image",
+        lambda *args, **kwargs: np.full((24, 24, 3), 180, dtype=np.uint8),
+    )
+
+    gif_bytes = render_prediction_gif(run, max_frames=3)
+
+    assert gif_bytes[:6] in {b"GIF87a", b"GIF89a"}

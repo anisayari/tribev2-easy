@@ -12,6 +12,7 @@ import uuid
 import warnings
 
 import numpy as np
+from PIL import Image
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -53,6 +54,7 @@ from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     ImageComparisonRun,
     PredictionRun,
+    build_timestep_report_frame,
     build_explainability_report,
     build_image_comparison_guide,
     build_result_interpretation,
@@ -62,11 +64,10 @@ from tribev2.easy import (
     load_model,
     predict_from_prepared_events,
     prepare_events,
-    render_brain_figure,
+    render_animated_brain_3d_html,
     render_brain_panel_bytes,
-    render_interactive_brain_html,
+    render_prediction_gif,
     render_prediction_mosaic,
-    segment_preview,
     summarize_predictions,
 )
 
@@ -162,6 +163,38 @@ def build_npy_download(preds: np.ndarray) -> bytes:
     np.save(buffer, preds)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def fit_image_bytes_to_height(raw_bytes: bytes, max_height: int = 320) -> tuple[bytes, int]:
+    image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    if image.height > max_height:
+        scale = max_height / image.height
+        image = image.resize((max(1, int(image.width * scale)), max_height), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue(), image.width
+
+
+def fit_image_array_to_height(image_array: np.ndarray, max_height: int = 320) -> tuple[np.ndarray, int]:
+    image = Image.fromarray(image_array)
+    if image.height > max_height:
+        scale = max_height / image.height
+        image = image.resize((max(1, int(image.width * scale)), max_height), Image.Resampling.LANCZOS)
+    return np.array(image), image.width
+
+
+def render_bounded_image(
+    image: bytes | np.ndarray,
+    *,
+    caption: str | None = None,
+    max_height: int = 320,
+) -> None:
+    if isinstance(image, bytes):
+        resized, width = fit_image_bytes_to_height(image, max_height=max_height)
+        st.image(resized, caption=caption, width=width)
+    else:
+        resized, width = fit_image_array_to_height(image, max_height=max_height)
+        st.image(resized, caption=caption, width=width)
 
 
 def render_source_links(sources: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> None:
@@ -284,8 +317,7 @@ def build_synced_player_html(run: PredictionRun) -> str:
       <div class="sync-wrap">
         <div class="sync-card">
           <h4>{'Video source' if run.input_kind == 'video' else 'Audio source'}</h4>
-          <{media_tag} id="tribe-media" src="{media_uri}" controls style="width:100%; border-radius: 14px;"></{media_tag}>
-          <input id="tribe-step" class="sync-slider" type="range" min="0" max="{max(len(timeline) - 1, 0)}" value="0" step="1" />
+          <{media_tag} id="tribe-media" src="{media_uri}" controls loop playsinline style="width:100%; border-radius: 14px; {'max-height: 340px; object-fit: contain;' if run.input_kind == 'video' else ''}"></{media_tag}>
           <div id="tribe-meta" class="sync-meta"></div>
           <div id="tribe-text" class="sync-text"></div>
         </div>
@@ -302,7 +334,6 @@ def build_synced_player_html(run: PredictionRun) -> str:
         const brain = document.getElementById("tribe-brain");
         const meta = document.getElementById("tribe-meta");
         const text = document.getElementById("tribe-text");
-        const slider = document.getElementById("tribe-step");
         let activeIndex = -1;
 
         function findStepIndex(currentTime) {{
@@ -321,7 +352,6 @@ def build_synced_player_html(run: PredictionRun) -> str:
           const step = steps[index];
           activeIndex = index;
           brain.src = step.brainUri;
-          slider.value = String(index);
           const end = Number(step.start) + Number(step.duration);
           meta.textContent = `Timestep ${{index + 1}} / ${{steps.length}} | ${{Number(step.start).toFixed(2)}}s - ${{end.toFixed(2)}}s`;
           text.textContent = step.text ? step.text : "Pas de texte aligne pour ce segment.";
@@ -333,17 +363,11 @@ def build_synced_player_html(run: PredictionRun) -> str:
           requestAnimationFrame(syncToPlayer);
         }}
 
-        slider.addEventListener("input", () => {{
-          const index = Number(slider.value || 0);
-          if (!steps.length) return;
-          player.currentTime = Number(steps[index].start || 0);
-          renderStep(index);
-        }});
-
         player.addEventListener("seeked", () => renderStep(findStepIndex(player.currentTime || 0)));
         player.addEventListener("timeupdate", () => renderStep(findStepIndex(player.currentTime || 0)));
         renderStep(0);
         syncToPlayer();
+        player.play().catch(() => {{}});
       </script>
     </div>
     """
@@ -457,7 +481,7 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             cols = st.columns(len(selected))
             for col, file in zip(cols, selected):
                 with col:
-                    st.image(file.getvalue(), caption=file.name, width="stretch")
+                    render_bounded_image(file.getvalue(), caption=file.name, max_height=260)
 
     options = {
         "checkpoint": checkpoint,
@@ -552,7 +576,11 @@ def render_input_preview(run: PredictionRun) -> None:
     elif run.source_path and run.input_kind == "audio":
         st.audio(run.source_path.read_bytes())
     elif run.source_path and run.input_kind == "image":
-        st.image(run.source_path.read_bytes(), caption=run.source_path.name, width="stretch")
+        render_bounded_image(
+            run.source_path.read_bytes(),
+            caption=run.source_path.name,
+            max_height=320,
+        )
     else:
         st.caption("Apercu non disponible pour cette entree.")
 
@@ -580,53 +608,57 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         st.subheader("Entree")
         render_input_preview(run)
 
-    st.subheader("Exploration par timestep")
-    timestep = st.slider(
-        "Choisir un timestep",
-        min_value=0,
-        max_value=len(run.preds) - 1,
-        value=0,
-        step=1,
+    st.subheader("Lecture animee")
+    animation_cols = st.columns([1.25, 1.0], gap="large")
+    animation_cache = st.session_state.setdefault("brain_gif_bytes", {})
+    animation_key = get_run_cache_key(run)
+    if animation_key not in animation_cache:
+        with st.spinner("Generation de l'animation cerebrale..."):
+            animation_cache[animation_key] = render_prediction_gif(run)
+    with animation_cols[0]:
+        st.image(
+            animation_cache[animation_key],
+            caption="Animation cerebrale en boucle",
+            width="stretch",
+        )
+    report_frame = build_timestep_report_frame(run)
+    with animation_cols[1]:
+        st.markdown("**Lecture par timestep**")
+        st.dataframe(report_frame, width="stretch", height=430)
+        st.caption(
+            "Chaque ligne donne une lecture d'un resultat du modele: zone probable, valence du stimulus, emotions textuelles quand elles existent, et resume spatial."
+        )
+
+    key_timestep = int(summary["mean_abs"].idxmax())
+    key_meta = collect_timestep_metadata(run)[key_timestep]
+    description = describe_timestep(run.preds, timestep=key_timestep)
+    interpretation = build_result_interpretation(
+        run,
+        timestep=key_timestep,
+        description=description,
+        segment_text=key_meta["text"],
     )
-    preview = segment_preview(run, timestep)
-    description = describe_timestep(run.preds, timestep=timestep)
-    fig_col, info_col = st.columns([1.7, 1.0], gap="large")
-    with fig_col:
-        fig = render_brain_figure(run.preds, timestep=timestep, vmin=0.5)
-        st.pyplot(fig, clear_figure=True, width="stretch")
-    with info_col:
+    spotlight_cols = st.columns([0.95, 1.35], gap="large")
+    with spotlight_cols[0]:
+        st.markdown("**Timestep le plus saillant**")
         st.write(
             {
-                "start": round(float(preview["start"]), 3) if preview["start"] is not None else None,
-                "duration": round(float(preview["duration"]), 3) if preview["duration"] is not None else None,
+                "timestep": key_timestep,
+                "start": round(float(key_meta["start"]), 3),
+                "duration": round(float(key_meta["duration"]), 3),
             }
         )
-        if preview["frame"] is not None:
-            st.image(preview["frame"], caption="Frame associee", width="stretch")
-        if preview["text"]:
-            st.text_area("Texte du segment", value=preview["text"], height=160)
-        st.markdown("**Lecture rapide**")
-        st.caption(description["summary"])
-        exp_cols = st.columns(2)
-        exp_cols[0].metric("Lateralite", description["laterality"].capitalize())
-        exp_cols[1].metric("Orientation", description["dorso_ventral"].capitalize())
-        exp_cols = st.columns(2)
-        exp_cols[0].metric("Zone AP", description["antero_posterior"].capitalize())
-        exp_cols[1].metric("Top 1% du signal", f"{description['focus_share']:.1%}")
-        interpretation = build_result_interpretation(
-            run,
-            timestep=timestep,
-            description=description,
-            segment_text=preview["text"],
-        )
-        st.markdown("**Interpretation du resultat**")
-        st.caption(interpretation["summary"])
-        infer_cols = st.columns(2)
-        infer_cols[0].metric("Zone probable", interpretation["zone"])
-        infer_cols[1].metric(
+        if key_meta["text"]:
+            st.text_area("Texte du segment", value=key_meta["text"], height=120)
+        spotlight_metrics = st.columns(2)
+        spotlight_metrics[0].metric("Zone probable", interpretation["zone"])
+        spotlight_metrics[1].metric(
             "Valence stimulus",
             interpretation["affect"]["valence"].capitalize(),
         )
+    with spotlight_cols[1]:
+        st.markdown("**Interpretation du resultat**")
+        st.caption(interpretation["summary"])
         st.markdown("- " + interpretation["modality_hint"])
         st.markdown("- " + interpretation["lateral_note"])
         st.markdown("- Fonctions plausibles: " + ", ".join(interpretation["systems"]))
@@ -646,8 +678,8 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
     with st.expander("Explication", expanded=False):
         report = build_explainability_report(
             run,
-            timestep=timestep,
-            duration=float(preview["duration"]) if preview["duration"] is not None else None,
+            timestep=key_timestep,
+            duration=float(key_meta["duration"]) if key_meta["duration"] is not None else None,
             description=description,
         )
         render_explainability_report(report)
@@ -678,7 +710,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         width="stretch",
     )
 
-    tab_labels = ["3D interactif", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
+    tab_labels = ["3D anime", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
     synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
     if synced_media_available:
         tab_labels = ["Lecteur synchronise"] + tab_labels
@@ -700,26 +732,23 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
             tab_offset = 1
 
     with tabs[tab_offset]:
-        html_cache = st.session_state.setdefault("interactive_html_by_timestep", {})
-        if st.button("Generer la scene 3D", width="stretch"):
-            with st.spinner("Generation de la scene 3D..."):
-                html_cache[timestep] = render_interactive_brain_html(
-                    run.preds,
-                    timestep=timestep,
-                    vmin=0.5,
-                )
-        html = html_cache.get(timestep)
+        html_cache = st.session_state.setdefault("animated_3d_html", {})
+        html_key = get_run_cache_key(run)
+        if st.button("Generer la vue 3D animee", width="stretch"):
+            with st.spinner("Generation de la vue 3D animee..."):
+                html_cache[html_key] = render_animated_brain_3d_html(run)
+        html = html_cache.get(html_key)
         if html:
-            components.html(html, height=760, scrolling=False)
+            components.html(html, height=900, scrolling=False)
             st.download_button(
-                "Telecharger la scene HTML",
+                "Telecharger la vue 3D HTML",
                 data=html.encode("utf-8"),
-                file_name=f"tribev2_timestep_{timestep:03d}.html",
+                file_name=f"tribev2_{run.input_kind}_brain_animation.html",
                 mime="text/html",
                 width="stretch",
             )
         else:
-            st.caption("Generez la scene pour obtenir un cerveau 3D que vous pouvez tourner librement.")
+            st.caption("Generez la vue 3D animee pour obtenir un cerveau rotatable avec bouton Play/Pause.")
 
     with tabs[tab_offset + 1]:
         export_cols = st.columns(2)
@@ -779,25 +808,22 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
 def comparison_results_panel(run: ImageComparisonRun) -> None:
     st.subheader("Comparaison d'images")
     common_timesteps = min(len(item.preds) for item in run.runs)
-    timestep = st.slider(
-        "Choisir un timestep commun",
-        min_value=0,
-        max_value=common_timesteps - 1,
-        value=0,
-        step=1,
-        key="image_compare_timestep",
-    )
     metric_cols = st.columns(4)
     metric_cols[0].metric("Images", len(run.runs))
     metric_cols[1].metric("Timesteps communs", common_timesteps)
     metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
     metric_cols[3].metric("Modalite", "Images")
-    descriptions = [describe_timestep(item.preds, timestep=timestep) for item in run.runs]
+    common_mean_abs = np.mean(
+        [np.abs(item.preds[:common_timesteps]).mean(axis=1) for item in run.runs],
+        axis=0,
+    )
+    key_timestep = int(np.argmax(common_mean_abs))
+    descriptions = [describe_timestep(item.preds, timestep=key_timestep) for item in run.runs]
 
     with st.expander("Explication", expanded=False):
         guide = build_image_comparison_guide(
             run,
-            timestep=timestep,
+            timestep=key_timestep,
             descriptions=descriptions,
         )
         st.markdown(f"**{guide['title']}**")
@@ -810,12 +836,19 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
         with col:
             st.markdown(f"**Image {idx}**")
             render_input_preview(item)
-            fig = render_brain_figure(item.preds, timestep=timestep, vmin=0.5)
-            st.pyplot(fig, clear_figure=True, width="stretch")
-            st.caption(description["summary"])
+            gif_cache = st.session_state.setdefault("brain_gif_bytes", {})
+            gif_key = get_run_cache_key(item)
+            if gif_key not in gif_cache:
+                with st.spinner(f"Generation de l'animation image {idx}..."):
+                    gif_cache[gif_key] = render_prediction_gif(item)
+            st.image(
+                gif_cache[gif_key],
+                caption="Animation cerebrale en boucle",
+                width="stretch",
+            )
             interpretation = build_result_interpretation(
                 item,
-                timestep=timestep,
+                timestep=key_timestep,
                 description=description,
             )
             st.markdown("**Interpretation du resultat**")
@@ -826,11 +859,21 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             st.caption(
                 "Sur une image seule, le dashboard peut proposer une lecture fonctionnelle grossiere de la zone, mais pas une emotion fiable decodee depuis la carte."
             )
+            with st.expander("Lecture par timestep", expanded=False):
+                st.dataframe(build_timestep_report_frame(item), width="stretch", height=260)
+            animated_3d_cache = st.session_state.setdefault("animated_3d_html", {})
+            image_3d_key = get_run_cache_key(item)
+            if st.button(f"Generer la 3D animee image {idx}", width="stretch", key=f"image3d_{idx}"):
+                with st.spinner(f"Generation de la 3D animee image {idx}..."):
+                    animated_3d_cache[image_3d_key] = render_animated_brain_3d_html(item)
+            image_html = animated_3d_cache.get(image_3d_key)
+            if image_html:
+                components.html(image_html, height=760, scrolling=False)
             with st.expander(f"Pourquoi l'image {idx} genere cette carte", expanded=False):
                 render_explainability_report(
                     build_explainability_report(
                         item,
-                        timestep=timestep,
+                        timestep=key_timestep,
                         description=description,
                     )
                 )

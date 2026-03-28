@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -328,6 +329,35 @@ def list_run_channels(run: PredictionRun) -> list[str]:
     return channels
 
 
+def normalize_signal_for_display(
+    signal: np.ndarray,
+    *,
+    percentile: int | None = 99,
+) -> np.ndarray:
+    """Normalize a signal robustly and silence divide-by-zero edge cases."""
+    signal = np.asarray(signal, dtype=float)
+    if percentile is None:
+        return signal
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = robust_normalize(signal, percentile=percentile)
+    return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
+
+
+def select_animation_indices(n_timesteps: int, max_frames: int = 72) -> list[int]:
+    """Select evenly spaced timestep indices while preserving endpoints."""
+    if n_timesteps <= 0:
+        return []
+    if n_timesteps <= max_frames:
+        return list(range(n_timesteps))
+    values = np.linspace(0, n_timesteps - 1, num=max_frames)
+    indices = sorted({int(round(value)) for value in values})
+    if indices[0] != 0:
+        indices[0] = 0
+    if indices[-1] != n_timesteps - 1:
+        indices[-1] = n_timesteps - 1
+    return indices
+
+
 def normalize_text_for_cues(text: str) -> list[str]:
     normalized = unicodedata.normalize("NFKD", text or "")
     normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
@@ -513,6 +543,47 @@ def build_result_interpretation(
     }
 
 
+def build_timestep_reports(
+    run: PredictionRun,
+    *,
+    indices: list[int] | None = None,
+) -> list[dict[str, tp.Any]]:
+    """Build a structured interpretation row for each timestep."""
+    metadata = collect_timestep_metadata(run)
+    if indices is None:
+        indices = list(range(len(run.preds)))
+    rows: list[dict[str, tp.Any]] = []
+    for idx in indices:
+        meta = metadata[idx]
+        description = describe_timestep(run.preds, timestep=idx)
+        interpretation = build_result_interpretation(
+            run,
+            timestep=idx,
+            description=description,
+            segment_text=meta["text"],
+        )
+        rows.append(
+            {
+                "timestep": idx,
+                "start_s": round(float(meta["start"]), 3),
+                "duration_s": round(float(meta["duration"]), 3),
+                "text": meta["text"],
+                "summary": description["summary"],
+                "zone": interpretation["zone"],
+                "systems": ", ".join(interpretation["systems"]),
+                "valence": interpretation["affect"]["valence"],
+                "emotions": ", ".join(interpretation["affect"]["emotions"]),
+                "evidence": ", ".join(interpretation["affect"]["evidence"]),
+            }
+        )
+    return rows
+
+
+def build_timestep_report_frame(run: PredictionRun) -> pd.DataFrame:
+    """Tabular view of per-timestep interpretations."""
+    return pd.DataFrame(build_timestep_reports(run))
+
+
 def render_brain_figure(
     preds: np.ndarray,
     *,
@@ -621,6 +692,9 @@ def render_brain_panel_image(
     if timestep < 0 or timestep >= len(preds):
         raise IndexError(f"Invalid timestep {timestep} for predictions of length {len(preds)}.")
     plotter = get_pyvista_plotter(mesh)
+    signal = preds[timestep]
+    if norm_percentile is not None:
+        signal = normalize_signal_for_display(signal, percentile=norm_percentile)
     fig, axes = plt.subplots(
         1,
         len(views),
@@ -629,11 +703,11 @@ def render_brain_panel_image(
     )
     flat_axes = list(axes.flatten())
     plotter.plot_surf(
-        preds[timestep],
+        signal,
         axes=flat_axes,
         views=list(views),
         cmap=cmap,
-        norm_percentile=norm_percentile,
+        norm_percentile=None,
         vmin=vmin,
     )
     for ax in flat_axes:
@@ -679,6 +753,46 @@ def render_brain_panel_bytes(
     return buffer.getvalue()
 
 
+def render_prediction_gif(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+    max_frames: int = 72,
+    vmin: float | None = 0.5,
+) -> bytes:
+    """Render a looping animated GIF of predicted brain activity."""
+    indices = select_animation_indices(len(run.preds), max_frames=max_frames)
+    if not indices:
+        raise ValueError("Cannot render an animation for an empty prediction run.")
+    frames = [
+        Image.fromarray(
+            render_brain_panel_image(
+                run.preds,
+                timestep=idx,
+                mesh=mesh,
+                vmin=vmin,
+            )
+        ).convert("P", palette=Image.ADAPTIVE)
+        for idx in indices
+    ]
+    timeline = collect_timestep_metadata(run)
+    durations = [
+        int(max(160, min(1200, round(float(timeline[idx]["duration"]) * 1000))))
+        for idx in indices
+    ]
+    buffer = io.BytesIO()
+    frames[0].save(
+        buffer,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+    )
+    return buffer.getvalue()
+
+
 def _get_surface_render_data(
     signal: np.ndarray,
     *,
@@ -692,7 +806,7 @@ def _get_surface_render_data(
 ) -> tuple[PlotBrainPyvista, np.ndarray, np.ndarray, np.ndarray]:
     plotter = get_pyvista_plotter(mesh)
     if norm_percentile is not None:
-        signal = robust_normalize(signal, percentile=norm_percentile)
+        signal = normalize_signal_for_display(signal, percentile=norm_percentile)
     mesh_data = plotter._mesh["both"]
     stat_map = plotter.get_stat_map(signal)["both"]
     sm = get_scalar_mappable(
@@ -763,6 +877,199 @@ def render_interactive_brain_html(
     return html
 
 
+def _cmap_to_plotly_colorscale(cmap_name: str = "fire", n: int = 12) -> list[list[tp.Any]]:
+    cmap = get_cmap(cmap_name)
+    scale: list[list[tp.Any]] = []
+    for idx, value in enumerate(np.linspace(0, 1, n)):
+        rgba = cmap(value)
+        rgb = tuple(int(channel * 255) for channel in rgba[:3])
+        scale.append([round(idx / max(n - 1, 1), 6), f"rgb{rgb}"])
+    return scale
+
+
+def render_animated_brain_3d_html(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+    max_frames: int = 30,
+    norm_percentile: int = 99,
+    width: int = 980,
+    height: int = 760,
+) -> str:
+    """Render a rotatable 3D brain animation with play/pause controls."""
+    from plotly.offline import get_plotlyjs
+
+    indices = select_animation_indices(len(run.preds), max_frames=max_frames)
+    if not indices:
+        raise ValueError("Cannot render a 3D animation for an empty prediction run.")
+
+    plotter = get_pyvista_plotter(mesh)
+    mesh_data = plotter._mesh["both"]
+    coords = np.round(mesh_data["coords"], 3)
+    faces = mesh_data["faces"].astype(int)
+    timeline = collect_timestep_metadata(run)
+    reports = build_timestep_reports(run, indices=indices)
+    frames: list[dict[str, tp.Any]] = []
+    for idx, report in zip(indices, reports):
+        normalized = normalize_signal_for_display(run.preds[idx], percentile=norm_percentile)
+        intensity = np.round(plotter.get_stat_map(normalized)["both"], 4).tolist()
+        frames.append(
+            {
+                "index": idx,
+                "start": timeline[idx]["start"],
+                "duration": timeline[idx]["duration"],
+                "text": report["text"],
+                "summary": report["summary"],
+                "zone": report["zone"],
+                "valence": report["valence"],
+                "intensity": intensity,
+            }
+        )
+
+    payload = {
+        "x": coords[:, 0].tolist(),
+        "y": coords[:, 1].tolist(),
+        "z": coords[:, 2].tolist(),
+        "i": faces[:, 0].tolist(),
+        "j": faces[:, 1].tolist(),
+        "k": faces[:, 2].tolist(),
+        "colorscale": _cmap_to_plotly_colorscale("fire"),
+        "frames": frames,
+        "frameDurationMs": max(
+            180,
+            int(
+                np.median(
+                    [
+                        max(160, min(1200, round(float(frame["duration"]) * 1000)))
+                        for frame in frames
+                    ]
+                )
+            ),
+        ),
+        "height": height,
+    }
+    payload_json = json.dumps(payload)
+    plotly_js = get_plotlyjs()
+
+    return f"""
+    <div style="font-family: ui-sans-serif, system-ui, sans-serif; color: #171717;">
+      <style>
+        .brain3d-wrap {{
+          border: 1px solid rgba(23, 23, 23, 0.10);
+          border-radius: 18px;
+          padding: 14px;
+          background: rgba(255, 250, 242, 0.94);
+          box-shadow: 0 8px 20px rgba(23, 23, 23, 0.05);
+        }}
+        .brain3d-toolbar {{
+          display: flex;
+          gap: 10px;
+          margin-bottom: 12px;
+          align-items: center;
+        }}
+        .brain3d-btn {{
+          border: 1px solid rgba(23, 23, 23, 0.12);
+          border-radius: 999px;
+          background: white;
+          padding: 8px 14px;
+          cursor: pointer;
+        }}
+        .brain3d-meta {{
+          color: #665f57;
+          font-size: 13px;
+          line-height: 1.5;
+        }}
+      </style>
+      <div class="brain3d-wrap">
+        <div class="brain3d-toolbar">
+          <button id="brain3d-play" class="brain3d-btn">Play</button>
+          <button id="brain3d-pause" class="brain3d-btn">Pause</button>
+          <div id="brain3d-label" class="brain3d-meta"></div>
+        </div>
+        <div id="brain3d-plot" style="width:100%; height:{height}px;"></div>
+        <div id="brain3d-summary" class="brain3d-meta"></div>
+      </div>
+      <script>{plotly_js}</script>
+      <script>
+        const payload = {payload_json};
+        const frames = payload.frames;
+        const plotDiv = document.getElementById("brain3d-plot");
+        const label = document.getElementById("brain3d-label");
+        const summary = document.getElementById("brain3d-summary");
+        let currentIndex = 0;
+        let timer = null;
+
+        const trace = {{
+          type: "mesh3d",
+          x: payload.x,
+          y: payload.y,
+          z: payload.z,
+          i: payload.i,
+          j: payload.j,
+          k: payload.k,
+          intensity: frames[0].intensity,
+          intensitymode: "vertex",
+          colorscale: payload.colorscale,
+          cmin: 0,
+          cmax: 1,
+          flatshading: false,
+          hoverinfo: "skip",
+          showscale: false,
+          lighting: {{ambient: 0.45, diffuse: 0.65, specular: 0.15, roughness: 0.7}},
+          lightposition: {{x: -100, y: 0, z: 200}},
+        }};
+        const layout = {{
+          margin: {{l: 0, r: 0, b: 0, t: 0}},
+          paper_bgcolor: "rgba(0,0,0,0)",
+          plot_bgcolor: "rgba(0,0,0,0)",
+          scene: {{
+            bgcolor: "rgba(0,0,0,0)",
+            xaxis: {{visible: false}},
+            yaxis: {{visible: false}},
+            zaxis: {{visible: false}},
+            aspectmode: "data",
+            camera: {{eye: {{x: -1.55, y: 0.08, z: 0.82}}}},
+          }},
+          uirevision: "brain3d-fixed",
+        }};
+        Plotly.newPlot(plotDiv, [trace], layout, {{
+          displayModeBar: true,
+          responsive: true,
+          scrollZoom: true,
+        }});
+
+        function renderFrame(index) {{
+          currentIndex = ((index % frames.length) + frames.length) % frames.length;
+          const frame = frames[currentIndex];
+          Plotly.restyle(plotDiv, {{intensity: [frame.intensity]}}, [0]);
+          label.textContent = `Timestep ${{frame.index + 1}} / ${{frames.length}} | ${{Number(frame.start).toFixed(2)}}s`;
+          const parts = [frame.summary, `Zone probable: ${{frame.zone}}`, `Valence: ${{frame.valence}}`];
+          if (frame.text) {{
+            parts.push(`Texte: ${{frame.text}}`);
+          }}
+          summary.textContent = parts.join(" | ");
+        }}
+
+        function play() {{
+          if (timer !== null || frames.length <= 1) return;
+          timer = window.setInterval(() => renderFrame(currentIndex + 1), payload.frameDurationMs);
+        }}
+
+        function pause() {{
+          if (timer !== null) {{
+            window.clearInterval(timer);
+            timer = null;
+          }}
+        }}
+
+        document.getElementById("brain3d-play").addEventListener("click", play);
+        document.getElementById("brain3d-pause").addEventListener("click", pause);
+        renderFrame(0);
+      </script>
+    </div>
+    """
+
+
 def export_prediction_video(
     run: PredictionRun,
     *,
@@ -815,7 +1122,10 @@ def describe_timestep(
     coords = plotter._mesh["both"]["coords"]
     focus_coords = coords[idx]
     weights = abs_signal[idx]
-    weighted_center = np.average(focus_coords, axis=0, weights=weights)
+    if float(weights.sum()) <= 1e-12:
+        weighted_center = focus_coords.mean(axis=0)
+    else:
+        weighted_center = np.average(focus_coords, axis=0, weights=weights)
     coord_scale = np.maximum(np.max(np.abs(coords), axis=0), 1e-6)
     x_score, y_score, z_score = weighted_center / coord_scale
 
