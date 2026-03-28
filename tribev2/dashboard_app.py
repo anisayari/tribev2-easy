@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import mimetypes
+import os
 from pathlib import Path
 import shutil
 import typing as tp
@@ -54,12 +55,7 @@ from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     ImageComparisonRun,
     PredictionRun,
-    build_timestep_report_frame,
-    build_explainability_report,
-    build_image_comparison_guide,
-    build_result_interpretation,
     collect_timestep_metadata,
-    describe_timestep,
     export_prediction_video,
     load_model,
     predict_from_prepared_events,
@@ -69,6 +65,12 @@ from tribev2.easy import (
     render_prediction_gif,
     render_prediction_mosaic,
     summarize_predictions,
+)
+from tribev2.openai_chat import (
+    DEFAULT_OPENAI_CHAT_MODEL,
+    build_openai_context_bundle,
+    build_raw_timestep_frame,
+    request_openai_run_explanation,
 )
 
 
@@ -244,6 +246,12 @@ def get_run_cache_key(run: PredictionRun) -> str:
     return f"{source_key}:{signal_key}"
 
 
+def get_dashboard_run_key(run: PredictionRun | ImageComparisonRun) -> str:
+    if isinstance(run, ImageComparisonRun):
+        return "comparison:" + "|".join(get_run_cache_key(item) for item in run.runs)
+    return get_run_cache_key(run)
+
+
 def get_cached_animated_3d_html(
     run: PredictionRun,
     *,
@@ -261,6 +269,124 @@ def get_cached_animated_3d_html(
                 height=height,
             )
     return tp.cast(str, html_cache[html_key])
+
+
+def render_raw_timestep_table(run: PredictionRun, *, height: int = 430) -> None:
+    st.markdown("**Donnees par timestep**")
+    st.dataframe(build_raw_timestep_frame(run), width="stretch", height=height)
+    st.caption(
+        "Table brute envoyable au chat: temps, texte aligne quand il existe, et statistiques numeriques de prediction."
+    )
+
+
+def get_cached_openai_context_bundle(
+    run: PredictionRun | ImageComparisonRun,
+    *,
+    image_detail: str,
+    max_images: int,
+) -> tuple[str, list[dict[str, str]], list[str]]:
+    cache = st.session_state.setdefault("openai_context_bundle", {})
+    cache_key = f"{get_dashboard_run_key(run)}:{image_detail}:{max_images}"
+    if cache_key not in cache:
+        cache[cache_key] = build_openai_context_bundle(
+            run,
+            image_detail=image_detail,
+            max_images=max_images,
+        )
+    return tp.cast(tuple[str, list[dict[str, str]], list[str]], cache[cache_key])
+
+
+def render_openai_chat_panel(
+    run: PredictionRun | ImageComparisonRun,
+    *,
+    model: str,
+    api_key: str,
+    reasoning_effort: str,
+    image_detail: str,
+    max_images: int,
+) -> None:
+    st.markdown("### Chat OpenAI")
+    st.caption(
+        "Le chat envoie automatiquement des images de timesteps clefs et les donnees numeriques du run a l'API."
+    )
+    if not api_key.strip():
+        st.info(
+            "Renseignez `OPENAI_API_KEY` dans la sidebar ou dans l'environnement pour activer le chat."
+        )
+        return
+
+    run_key = get_dashboard_run_key(run)
+    sessions = st.session_state.setdefault("openai_chat_sessions", {})
+    session = sessions.setdefault(
+        run_key,
+        {
+            "messages": [],
+            "previous_response_id": None,
+        },
+    )
+    if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
+        sessions[run_key] = {"messages": [], "previous_response_id": None}
+        st.rerun()
+
+    context_bundle = get_cached_openai_context_bundle(
+        run,
+        image_detail=image_detail,
+        max_images=max_images,
+    )
+    context_text, _, labels = context_bundle
+    with st.expander("Contexte envoye au modele", expanded=not session["messages"]):
+        st.markdown(
+            "\n".join(f"- {label}" for label in labels)
+            if labels
+            else "Aucune image de timestep selectionnee."
+        )
+        st.code(context_text, language="json")
+
+    for message in session["messages"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input(
+        "Demandez a GPT d'expliquer ce run...",
+        key=f"chat_input_{run_key}",
+    )
+    if not prompt:
+        return
+
+    session["messages"].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        try:
+            with st.spinner(f"{model} analyse le run..."):
+                reply, response_id, labels = request_openai_run_explanation(
+                    api_key=api_key.strip(),
+                    model=model.strip(),
+                    reasoning_effort=reasoning_effort,
+                    user_prompt=prompt,
+                    run=run,
+                    previous_response_id=session.get("previous_response_id"),
+                    include_context=session.get("previous_response_id") is None,
+                    image_detail=image_detail,
+                    max_images=max_images,
+                    context_bundle=context_bundle,
+                )
+        except Exception as exc:
+            session["messages"].append(
+                {
+                    "role": "assistant",
+                    "content": f"Echec de l'appel OpenAI: {exc}",
+                }
+            )
+            st.exception(exc)
+            return
+        if labels and session.get("previous_response_id") is None:
+            st.caption("Contexte envoye: " + " | ".join(labels))
+        st.markdown(reply)
+
+    session["messages"].append({"role": "assistant", "content": reply})
+    session["previous_response_id"] = response_id
 
 
 def build_synced_player_html(run: PredictionRun) -> str:
@@ -451,6 +577,36 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             st.info(
                 "Transcription desactivee: WhisperX n'est pas detecte dans l'environnement actif."
             )
+        st.divider()
+        st.header("Chat OpenAI")
+        openai_model = st.text_input(
+            "Modele OpenAI",
+            value=DEFAULT_OPENAI_CHAT_MODEL,
+            help="Le guide modeles OpenAI recommande gpt-5.4 pour les cas complexes et multimodaux.",
+        )
+        openai_reasoning = st.selectbox(
+            "Effort de raisonnement",
+            options=["low", "medium", "high", "xhigh"],
+            index=1,
+        )
+        openai_image_detail = st.selectbox(
+            "Detail des images envoyees",
+            options=["low", "auto", "high"],
+            index=0,
+        )
+        openai_max_images = st.slider(
+            "Images de timesteps envoyees",
+            min_value=1,
+            max_value=6,
+            value=4,
+            step=1,
+        )
+        openai_api_key = st.text_input(
+            "OPENAI_API_KEY",
+            value=os.getenv("OPENAI_API_KEY", ""),
+            type="password",
+            help="Cle utilisee par le panneau de chat lateral. Laissez vide pour utiliser seulement la variable d'environnement.",
+        )
         st.caption(
             "Le dashboard utilise par defaut `unsloth/Llama-3.2-3B`, "
             "un backbone public non gated compatible avec le codeur texte du projet."
@@ -513,6 +669,11 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         "max_context_words": max_context_words,
         "image_duration": image_duration,
         "image_fps": image_fps,
+        "openai_model": openai_model,
+        "openai_reasoning": openai_reasoning,
+        "openai_image_detail": openai_image_detail,
+        "openai_max_images": openai_max_images,
+        "openai_api_key": openai_api_key,
     }
     return request, options
 
@@ -640,70 +801,8 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
             caption="Animation cerebrale en boucle",
             width="stretch",
         )
-    report_frame = build_timestep_report_frame(run)
     with animation_cols[1]:
-        st.markdown("**Lecture par timestep**")
-        st.dataframe(report_frame, width="stretch", height=430)
-        st.caption(
-            "Chaque ligne donne une lecture d'un resultat du modele: zone probable, valence du stimulus, emotions textuelles quand elles existent, et resume spatial."
-        )
-
-    key_timestep = int(summary["mean_abs"].idxmax())
-    key_meta = collect_timestep_metadata(run)[key_timestep]
-    description = describe_timestep(run.preds, timestep=key_timestep)
-    interpretation = build_result_interpretation(
-        run,
-        timestep=key_timestep,
-        description=description,
-        segment_text=key_meta["text"],
-    )
-    spotlight_cols = st.columns([0.95, 1.35], gap="large")
-    with spotlight_cols[0]:
-        st.markdown("**Timestep le plus saillant**")
-        st.write(
-            {
-                "timestep": key_timestep,
-                "start": round(float(key_meta["start"]), 3),
-                "duration": round(float(key_meta["duration"]), 3),
-            }
-        )
-        if key_meta["text"]:
-            st.text_area("Texte du segment", value=key_meta["text"], height=120)
-        spotlight_metrics = st.columns(2)
-        spotlight_metrics[0].metric("Zone probable", interpretation["zone"])
-        spotlight_metrics[1].metric(
-            "Valence stimulus",
-            interpretation["affect"]["valence"].capitalize(),
-        )
-    with spotlight_cols[1]:
-        st.markdown("**Interpretation du resultat**")
-        st.caption(interpretation["summary"])
-        st.markdown("- " + interpretation["modality_hint"])
-        st.markdown("- " + interpretation["lateral_note"])
-        st.markdown("- Fonctions plausibles: " + ", ".join(interpretation["systems"]))
-        if interpretation["affect"]["evidence"]:
-            st.markdown(
-                "- Indices affectifs reperes dans le stimulus: "
-                + ", ".join(interpretation["affect"]["evidence"])
-            )
-        else:
-            st.markdown(
-                "- Aucun indice textuel assez net pour qualifier le resultat en peur, desir, joie, etc."
-            )
-        st.caption(
-            "Les etiquettes affectives viennent du stimulus textuel aligne quand il existe; ce n'est pas une lecture directe de l'etat mental depuis la carte."
-        )
-
-    with st.expander("Explication", expanded=False):
-        report = build_explainability_report(
-            run,
-            timestep=key_timestep,
-            duration=float(key_meta["duration"]) if key_meta["duration"] is not None else None,
-            description=description,
-        )
-        render_explainability_report(report)
-        st.markdown("- Utilisez la vue 3D pour tourner autour du cortex et verifier si le foyer est plutot lateral, medial, dorsal ou ventral.")
-        st.markdown("- Utilisez l'animation MP4 pour voir comment la prediction evolue dans le temps et la rapprocher du texte, de l'audio ou de la video source.")
+        render_raw_timestep_table(run)
 
     st.subheader("Exports")
     export_cols = st.columns(3)
@@ -827,30 +926,13 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
     metric_cols[1].metric("Timesteps communs", common_timesteps)
     metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
     metric_cols[3].metric("Modalite", "Images")
-    common_mean_abs = np.mean(
-        [np.abs(item.preds[:common_timesteps]).mean(axis=1) for item in run.runs],
-        axis=0,
-    )
-    key_timestep = int(np.argmax(common_mean_abs))
-    descriptions = [describe_timestep(item.preds, timestep=key_timestep) for item in run.runs]
-
-    with st.expander("Explication", expanded=False):
-        guide = build_image_comparison_guide(
-            run,
-            timestep=key_timestep,
-            descriptions=descriptions,
-        )
-        st.markdown(f"**{guide['title']}**")
-        for bullet in guide["bullets"]:
-            st.markdown(f"- {bullet}")
-        render_source_links(guide["sources"])
 
     st.markdown("**Comparaison animee**")
     st.caption(
         "Chaque cerveau 3D demarre automatiquement en boucle. Sur une image statique, une rotation douce de camera rend la lecture plus visible."
     )
     cols = st.columns(len(run.runs), gap="large")
-    for idx, (col, item, description) in enumerate(zip(cols, run.runs, descriptions), start=1):
+    for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
         with col:
             st.markdown(f"**Image {idx}**")
             render_input_preview(item)
@@ -882,29 +964,8 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
                 mime="text/html",
                 width="stretch",
             )
-            interpretation = build_result_interpretation(
-                item,
-                timestep=key_timestep,
-                description=description,
-            )
-            st.markdown("**Interpretation du resultat**")
-            st.caption(interpretation["summary"])
-            st.markdown(f"- Zone probable: {interpretation['zone']}")
-            st.markdown("- Fonctions plausibles: " + ", ".join(interpretation["systems"]))
-            st.markdown("- " + interpretation["modality_hint"])
-            st.caption(
-                "Sur une image seule, le dashboard peut proposer une lecture fonctionnelle grossiere de la zone, mais pas une emotion fiable decodee depuis la carte."
-            )
-            with st.expander("Lecture par timestep", expanded=False):
-                st.dataframe(build_timestep_report_frame(item), width="stretch", height=260)
-            with st.expander(f"Pourquoi l'image {idx} genere cette carte", expanded=False):
-                render_explainability_report(
-                    build_explainability_report(
-                        item,
-                        timestep=key_timestep,
-                        description=description,
-                    )
-                )
+            with st.expander("Donnees par timestep", expanded=False):
+                render_raw_timestep_table(item, height=260)
             st.download_button(
                 f"Predictions image {idx}",
                 data=build_npy_download(item.preds),
@@ -924,7 +985,18 @@ def main() -> None:
 
     run = st.session_state.get("prediction_run")
     if run is not None:
-        results_panel(cache_folder, run)
+        results_col, chat_col = st.columns([2.65, 1.15], gap="large")
+        with results_col:
+            results_panel(cache_folder, run)
+        with chat_col:
+            render_openai_chat_panel(
+                run,
+                model=options["openai_model"],
+                api_key=options["openai_api_key"] or os.getenv("OPENAI_API_KEY", ""),
+                reasoning_effort=options["openai_reasoning"],
+                image_detail=options["openai_image_detail"],
+                max_images=int(options["openai_max_images"]),
+            )
 
 
 if __name__ == "__main__":

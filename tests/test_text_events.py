@@ -7,6 +7,7 @@ import torch
 from tribev2 import demo_utils as demo_utils_module
 from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
+from tribev2 import openai_chat as openai_chat_module
 from tribev2.eventstransforms import ExtractWordsFromAudio
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
@@ -24,6 +25,7 @@ from tribev2.easy import (
     render_prediction_gif,
     resolve_text_model_name,
 )
+from tribev2.openai_chat import build_openai_context_bundle, build_raw_timestep_frame
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -290,6 +292,33 @@ def test_build_timestep_report_frame_contains_interpretation_columns():
     assert "valence" in frame.columns
 
 
+def test_build_raw_timestep_frame_contains_only_raw_metrics():
+    preds = np.zeros((2, 20484), dtype=float)
+    preds[0, :128] = 1.0
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="hello hope",
+    )
+
+    frame = build_raw_timestep_frame(run)
+
+    assert list(frame.columns) == [
+        "timestep",
+        "start_s",
+        "duration_s",
+        "text",
+        "mean",
+        "std",
+        "mean_abs",
+        "max_abs",
+    ]
+    assert "zone" not in frame.columns
+    assert "valence" not in frame.columns
+
+
 def test_render_prediction_gif_returns_bytes(monkeypatch):
     preds = np.zeros((3, 20484), dtype=float)
     run = PredictionRun(
@@ -367,6 +396,65 @@ def test_render_animated_brain_3d_html_autoplays(monkeypatch):
     assert "scene.camera.eye" in html
     assert "play();" in html
     assert "vertexcolor" in html
+
+
+def test_build_openai_context_bundle_for_single_run(monkeypatch):
+    preds = np.zeros((3, 20484), dtype=float)
+    preds[1, :256] = 1.0
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="hello hope",
+    )
+    monkeypatch.setattr(
+        openai_chat_module,
+        "render_brain_panel_bytes",
+        lambda *args, **kwargs: b"fake-jpeg",
+    )
+
+    context_text, image_parts, labels = build_openai_context_bundle(run, max_images=2)
+
+    assert "tribev2_prediction_run" in context_text
+    assert len(image_parts) == 2
+    assert len(labels) == 2
+    assert image_parts[0]["type"] == "input_image"
+    assert image_parts[0]["image_url"].startswith("data:image/jpeg;base64,")
+
+
+def test_build_openai_context_bundle_for_image_comparison(monkeypatch):
+    preds = np.zeros((2, 20484), dtype=float)
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(
+                events=build_text_events_from_text("image one"),
+                preds=preds,
+                segments=[],
+                input_kind="image",
+            ),
+            PredictionRun(
+                events=build_text_events_from_text("image two"),
+                preds=preds,
+                segments=[],
+                input_kind="image",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        openai_chat_module,
+        "render_brain_panel_bytes",
+        lambda *args, **kwargs: b"fake-jpeg",
+    )
+
+    context_text, image_parts, labels = build_openai_context_bundle(run, max_images=4)
+
+    assert "tribev2_image_comparison" in context_text
+    assert "image_1" in context_text
+    assert "image_2" in context_text
+    assert len(image_parts) >= 2
+    assert any("image_1" in label for label in labels)
+    assert any("image_2" in label for label in labels)
 
 
 def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):
