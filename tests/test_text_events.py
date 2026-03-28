@@ -25,7 +25,11 @@ from tribev2.easy import (
     render_prediction_gif,
     resolve_text_model_name,
 )
-from tribev2.openai_chat import build_openai_context_bundle, build_raw_timestep_frame
+from tribev2.openai_chat import (
+    build_chat_system_prompt,
+    build_openai_context_bundle,
+    build_raw_timestep_frame,
+)
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -455,6 +459,61 @@ def test_build_openai_context_bundle_for_image_comparison(monkeypatch):
     assert len(image_parts) >= 2
     assert any("image_1" in label for label in labels)
     assert any("image_2" in label for label in labels)
+
+
+def test_build_chat_system_prompt_for_image_mentions_static_clip_and_uncertainties(tmp_path: Path):
+    run = PredictionRun(
+        events=easy_module.pd.DataFrame([{"type": "Video"}]),
+        preds=np.zeros((3, 20484), dtype=float),
+        segments=[],
+        input_kind="image",
+        source_path=tmp_path / "image.png",
+    )
+
+    prompt = build_chat_system_prompt(run)
+
+    assert "court clip video silencieux statique" in prompt
+    assert "Emotion ou ressenti plausible" in prompt
+    assert "Ce qui reste incertain" in prompt
+    assert "predictions TRIBE v2 et non de mesures fMRI reelles" in prompt
+
+
+def test_build_openai_context_bundle_includes_interpretation_contract_for_text(monkeypatch):
+    run = PredictionRun(
+        events=build_text_events_from_text("A quiet but tense scene."),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="A quiet but tense scene.",
+    )
+    monkeypatch.setattr(
+        openai_chat_module,
+        "render_brain_panel_bytes",
+        lambda *args, **kwargs: b"fake-jpeg",
+    )
+
+    context_text, _, _ = build_openai_context_bundle(run, max_images=2)
+    payload = openai_chat_module.json.loads(context_text)
+
+    assert payload["run"]["interpretation_contract"]["format_attendu"][2] == "3. Emotion ou ressenti plausible"
+    assert "timings synthetiques" in " ".join(payload["run"]["modality_notes"])
+    assert "selected_timestep_image_policy" in payload["run"]
+
+
+def test_build_chat_system_prompt_for_image_comparison_mentions_explicit_comparison():
+    preds = np.zeros((2, 20484), dtype=float)
+    events = build_text_events_from_text("placeholder")
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="image"),
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="image"),
+        ]
+    )
+
+    prompt = build_chat_system_prompt(run)
+
+    assert "compare explicitement image 1 vs image 2" in prompt
+    assert "predictions TRIBE v2 et non de mesures fMRI reelles" in prompt
 
 
 def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):

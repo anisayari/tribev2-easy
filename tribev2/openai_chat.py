@@ -15,18 +15,123 @@ from tribev2.easy import (
 
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-5.4"
 
-CHAT_SYSTEM_PROMPT = """
-Tu es l'assistant d'analyse du dashboard TRIBE v2 Easy.
-Ta tache est d'expliquer les sorties du modele a partir des donnees numeriques et des images des timesteps qui te sont fournies.
+COMMON_UNCERTAINTIES = [
+    "l'ordre exact des images si l'affichage ne suit pas strictement t0→tN ou si seules des frames cles ont ete jointes",
+    "la comparabilite stricte des intensites visuelles sans colorbar commune ou sans confirmation d'une normalisation identique",
+    "l'attribution anatomique fine a une region precise plutot qu'a un grand systeme cortical",
+    "toute interpretation neuroscientifique forte, car il s'agit de predictions TRIBE v2 et non de mesures fMRI reelles",
+]
 
-Regles:
-- Appuie-toi d'abord sur les observations visibles dans les cartes et sur les stats jointes.
-- Distingue clairement ce qui est observe, ce qui est une hypothese, et ce qui reste incertain.
-- Ne presente pas la sortie comme un diagnostic medical, ni comme une lecture directe des intentions ou de l'etat mental.
-- Si l'utilisateur demande une interpretation neuroscientifique, reste prudent et parle en termes de patterns plausibles, pas de certitude.
-- Si la demande porte sur une comparaison, compare explicitement run 1 vs run 2 ou image 1 vs image 2.
-- Reponds en francais sauf si l'utilisateur demande une autre langue.
-""".strip()
+
+def _build_pipeline_summary() -> list[str]:
+    return [
+        "Le dashboard convertit la source brute en evenements ou segments temporels.",
+        "Des encodeurs fondation extraient des representations video, audio et texte selon la modalite disponible.",
+        "TRIBE v2 projette ces representations vers une activite corticale predite sur la surface cerebrale.",
+        "Chaque timestep correspond a un segment predit du stimulus, pas a une mesure cerebrale enregistree.",
+    ]
+
+
+def _build_modality_notes(run: PredictionRun | ImageComparisonRun) -> list[str]:
+    if isinstance(run, ImageComparisonRun):
+        return [
+            "Le run compare deux images traitees independamment puis affichees cote a cote.",
+            "Chaque image fixe est convertie en court clip video silencieux statique pour passer dans TRIBE v2.",
+            "Les timesteps pour une image ne racontent donc pas une evolution temporelle reelle; ils repetent le meme contenu visuel.",
+            "La comparaison doit surtout porter sur la distribution spatiale, la lateralite, la saillance et le ton affectif plausible du contenu visuel.",
+        ]
+    if run.input_kind == "video":
+        return [
+            "La source est une video. Chaque timestep correspond a un segment temporel du clip.",
+            "L'interpretation peut relier les cartes au contenu visuel, au rythme, a la parole et au son s'ils sont presents dans le segment.",
+            "Les emotions ou ressentis doivent etre formules comme hypotheses plausibles sur le stimulus, pas comme lecture directe d'un etat mental.",
+        ]
+    if run.input_kind == "audio":
+        return [
+            "La source est un audio. Chaque timestep correspond a un segment sonore du fichier.",
+            "Si un texte aligne existe, il sert d'indice complementaire, mais la source principale reste le signal acoustique.",
+            "L'interpretation peut commenter prosodie, tension, calme, menace, joie ou tristesse plausibles, en les liant au stimulus sonore.",
+        ]
+    if run.input_kind == "text":
+        return [
+            "La source est un texte. Dans ce fork, le mode texte direct construit des timings synthetiques mot par mot ou segment par segment.",
+            "Les timesteps refletent donc un decoupage artificiel du texte, pas un enregistrement audio ou video reel.",
+            "Les emotions ou ressentis peuvent etre deduits du champ lexical et du ton du texte, puis confrontes a la carte predite avec prudence.",
+        ]
+    if run.input_kind == "image":
+        return [
+            "La source est une image fixe.",
+            "Dans ce fork, l'image est convertie en court clip video silencieux statique pour passer dans TRIBE v2.",
+            "Les timesteps representent des passes repetees sur le meme contenu visuel, pas une narration temporelle reelle.",
+            "L'interpretation doit surtout porter sur la structure visuelle, la saillance spatiale et le ton affectif plausible du contenu de l'image.",
+        ]
+    return [
+        "La modalite doit etre lue a partir du contexte joint.",
+        "Les timesteps correspondent a des segments predits par TRIBE v2.",
+    ]
+
+
+def _build_interpretation_contract(run: PredictionRun | ImageComparisonRun) -> dict[str, tp.Any]:
+    comparison_hint = (
+        "Si deux images ou deux runs sont presents, compare explicitement image 1 vs image 2 ou run 1 vs run 2."
+        if isinstance(run, ImageComparisonRun)
+        else "Si l'utilisateur compare plusieurs moments, signale clairement les differences de pattern d'un timestep a l'autre."
+    )
+    return {
+        "mission": [
+            "Expliquer ce que montre la carte d'activite corticale predite.",
+            "Dire a quoi le pattern est typiquement associe: vision, audition, langage, attention, saillance, memoire de travail, cognition sociale ou charge affective plausible.",
+            "Si l'utilisateur le demande, proposer une lecture prudente de valence ou d'emotions plausibles: positive, negative, mixte, peur, desir, joie, tristesse, colere, calme, tension, menace, surprise.",
+            "Toujours distinguer observation, hypothese et incertitude.",
+        ],
+        "format_attendu": [
+            "1. Ce qu'on voit",
+            "2. A quoi c'est typique",
+            "3. Emotion ou ressenti plausible",
+            "4. Indices du stimulus et des donnees qui soutiennent cette lecture",
+            "5. Ce qui reste incertain",
+        ],
+        "regles": [
+            "Commence par la modalite et rappelle ce que represente un timestep dans ce run.",
+            "Ne parle jamais comme si TRIBE v2 mesurait directement l'activite cerebrale: ce sont des predictions du modele.",
+            "Ne transforme pas une emotion plausible en certitude.",
+            comparison_hint,
+            "Reponds en francais sauf si l'utilisateur demande une autre langue.",
+        ],
+        "incertitudes_a_mentionner": COMMON_UNCERTAINTIES,
+    }
+
+
+def build_chat_system_prompt(run: PredictionRun | ImageComparisonRun) -> str:
+    sections = [
+        "Tu es l'assistant d'analyse du dashboard TRIBE v2 Easy.",
+        "Ta tache est d'expliquer les sorties du modele a partir des donnees numeriques et des images de timesteps qui te sont fournies.",
+        "",
+        "Comment fonctionne l'experience TRIBE v2 dans ce dashboard:",
+        *[f"- {item}" for item in _build_pipeline_summary()],
+        "",
+        "Comment lire la modalite courante:",
+        *[f"- {item}" for item in _build_modality_notes(run)],
+        "",
+        "Cadre d'interpretation:",
+        *[f"- {item}" for item in _build_interpretation_contract(run)["mission"]],
+        "",
+        "Format de reponse attendu:",
+        *[f"- {item}" for item in _build_interpretation_contract(run)["format_attendu"]],
+        "",
+        "Regles:",
+        *[f"- {item}" for item in _build_interpretation_contract(run)["regles"]],
+        "",
+        "Ce qui reste incertain:",
+        *[f"- {item}" for item in COMMON_UNCERTAINTIES],
+        "",
+        "Interdits:",
+        "- pas de diagnostic medical",
+        "- pas de lecture directe des intentions ou de l'etat mental",
+        "- pas d'affirmation anatomique trop fine sans preuve",
+        "- pas d'interpretation neuroscientifique forte presentee comme certaine",
+    ]
+    return "\n".join(sections).strip()
 
 
 def build_raw_timestep_frame(run: PredictionRun) -> pd.DataFrame:
@@ -94,6 +199,7 @@ def _prediction_run_context_images(
     frame = build_raw_timestep_frame(run)
     selected = _select_key_timestep_indices(frame, max_images=max_images)
     rows_for_prompt = frame.sort_values("mean_abs", ascending=False).head(8)
+    modality_notes = _build_modality_notes(run)
     payload = {
         "run_label": run_label,
         "input_kind": run.input_kind,
@@ -101,6 +207,12 @@ def _prediction_run_context_images(
         "n_vertices": int(run.preds.shape[1]),
         "source_path": str(run.source_path) if run.source_path is not None else None,
         "raw_text_excerpt": _truncate_text(run.raw_text),
+        "tribev2_pipeline_summary": _build_pipeline_summary(),
+        "modality_notes": modality_notes,
+        "interpretation_contract": _build_interpretation_contract(run),
+        "selected_timestep_image_policy": (
+            "Les images jointes sont des timesteps cles choisis automatiquement a partir du debut, du milieu, de la fin et des pics de mean_abs."
+        ),
         "timestep_rows": rows_for_prompt.to_dict(orient="records"),
     }
     image_parts: list[dict[str, str]] = []
@@ -152,6 +264,9 @@ def build_openai_context_bundle(
         context = {
             "kind": "tribev2_image_comparison",
             "n_images": len(run.runs),
+            "tribev2_pipeline_summary": _build_pipeline_summary(),
+            "comparison_notes": _build_modality_notes(run),
+            "interpretation_contract": _build_interpretation_contract(run),
             "runs": payload_runs,
         }
         return json.dumps(context, ensure_ascii=False, indent=2), image_parts[:max_images], labels[:max_images]
@@ -202,6 +317,12 @@ def request_openai_run_explanation(
     client = OpenAI(api_key=api_key)
     labels: list[str] = []
     content: list[dict[str, str]] = []
+    input_items: list[dict[str, tp.Any]] = [
+        {
+            "role": "system",
+            "content": [{"type": "input_text", "text": build_chat_system_prompt(run)}],
+        }
+    ]
     if include_context:
         if context_bundle is None:
             context_bundle = build_openai_context_bundle(
@@ -214,8 +335,7 @@ def request_openai_run_explanation(
             {
                 "type": "input_text",
                 "text": (
-                    CHAT_SYSTEM_PROMPT
-                    + "\n\nContexte TRIBE v2 du run courant:\n"
+                    "Contexte TRIBE v2 du run courant:\n"
                     + context_text
                     + "\n\nUtilise ce contexte et les images jointes pour repondre a la question suivante."
                 ),
@@ -223,10 +343,11 @@ def request_openai_run_explanation(
         )
         content.extend(image_parts)
     content.append({"type": "input_text", "text": user_prompt})
+    input_items.append({"role": "user", "content": content})
     response = client.responses.create(
         model=model,
         previous_response_id=previous_response_id,
         reasoning={"effort": reasoning_effort},
-        input=[{"role": "user", "content": content}],
+        input=input_items,
     )
     return extract_response_text(response), getattr(response, "id", None), labels

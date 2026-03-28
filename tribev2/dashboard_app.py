@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import io
 import json
 import logging
@@ -188,15 +189,28 @@ def apply_theme() -> None:
           }
           .tribe-pill {
             display: inline-flex;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.48rem 0.75rem;
-            border-radius: 999px;
-            background: rgba(15, 23, 34, 0.05);
-            border: 1px solid rgba(15, 23, 34, 0.07);
-            font-size: 0.78rem;
-            font-weight: 600;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.08rem;
+            min-width: 118px;
+            padding: 0.5rem 0.72rem 0.54rem 0.72rem;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.48);
+            border: 1px solid rgba(15, 23, 34, 0.08);
+            box-shadow: 0 10px 18px rgba(15, 23, 34, 0.04);
+          }
+          .tribe-pill-label {
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--muted);
+          }
+          .tribe-pill-value {
+            font-size: 0.86rem;
             color: #18212d;
+            font-weight: 600;
+            line-height: 1.15;
           }
           .tribe-sectionhead {
             margin-bottom: 0.6rem;
@@ -288,6 +302,32 @@ def apply_theme() -> None:
             color: var(--muted);
             font-size: 0.8rem;
           }
+          .tribe-slimbar {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 0.9rem;
+            align-items: center;
+            padding: 0.78rem 0.9rem;
+            margin-top: 0.7rem;
+            border-radius: 16px;
+            border: 1px solid rgba(15, 23, 34, 0.08);
+            background: rgba(255, 255, 255, 0.5);
+          }
+          .tribe-slimbar-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--ink);
+          }
+          .tribe-slimbar-copy {
+            margin-top: 0.15rem;
+            font-size: 0.8rem;
+            color: var(--muted);
+          }
+          .tribe-progress-caption {
+            margin-top: 0.4rem;
+            font-size: 0.78rem;
+            color: var(--muted);
+          }
           .tribe-keyline {
             margin: 0.15rem 0 0.7rem 0;
             height: 1px;
@@ -300,6 +340,12 @@ def apply_theme() -> None:
             .tribe-pills {
               justify-content: flex-start;
             }
+            .tribe-pill {
+              min-width: 0;
+            }
+            .tribe-slimbar {
+              grid-template-columns: 1fr;
+            }
           }
         </style>
         """,
@@ -307,22 +353,56 @@ def apply_theme() -> None:
     )
 
 
-def hero() -> None:
-    st.markdown(
+def _build_shell_pills(
+    request: dict[str, object] | None,
+    options: dict[str, object] | None,
+    cache_folder: Path | None,
+) -> str:
+    request = request or {}
+    options = options or {}
+    pills = [
+        ("Source", _format_request_label(request)),
+        ("Device", str(options.get("device", "cuda")).upper()),
+        ("Checkpoint", str(options.get("checkpoint", "facebook/tribev2")).split("/")[-1]),
+        ("Chat", str(options.get("openai_model", DEFAULT_OPENAI_CHAT_MODEL))),
+        ("WhisperX", "on" if options.get("transcribe") else "off"),
+    ]
+    if cache_folder is not None:
+        pills.append(("Cache", Path(cache_folder).name or str(cache_folder)))
+    pills.append(
+        (
+            "Image clip",
+            f"{float(options.get('image_duration', 4.0)):.1f}s @ {int(options.get('image_fps', 6))} fps",
+        )
+    )
+    return "".join(
+        f"""
+        <div class="tribe-pill">
+          <div class="tribe-pill-label">{html.escape(label)}</div>
+          <div class="tribe-pill-value">{html.escape(value)}</div>
+        </div>
         """
+        for label, value in pills
+    )
+
+
+def hero(
+    request: dict[str, object] | None = None,
+    options: dict[str, object] | None = None,
+    cache_folder: Path | None = None,
+) -> None:
+    st.markdown(
+        f"""
         <div class="tribe-shellbar">
           <div>
             <div class="tribe-kicker">TRIBE V2 EASY WORKSPACE</div>
             <h1>Multimodal brain prediction dashboard</h1>
             <p>
-              Importez une source, lancez l'inference locale GPU, inspectez les surfaces corticales,
-              puis deleguez l'explication du run au chat OpenAI sur la droite.
+              Importez une source, lancez l'inference locale GPU, inspectez les surfaces corticales et demandez l'analyse du run au chat OpenAI.
             </p>
           </div>
           <div class="tribe-pills">
-            <div class="tribe-pill">Local GPU</div>
-            <div class="tribe-pill">Video / audio / texte / image</div>
-            <div class="tribe-pill">3D + exports + chat</div>
+            {_build_shell_pills(request, options, cache_folder)}
           </div>
         </div>
         """,
@@ -362,27 +442,18 @@ def _format_request_label(request: dict[str, object]) -> str:
     return "Aucune source"
 
 
-def render_run_prep_panel(cache_folder: Path, request: dict, options: dict) -> None:
-    with st.container(border=True):
-        section_head(
-            "Launch strip",
-            "Barre de lancement compacte. Le detail complet de la configuration reste dans la colonne de droite du workspace source.",
-            kicker="Launch",
-        )
-        cols = st.columns(3, gap="small")
-        cols[0].metric("Source active", _format_request_label(request))
-        cols[1].metric("Checkpoint", str(options["checkpoint"]).split("/")[-1])
-        cols[2].metric("Chat", str(options["openai_model"]))
-        st.markdown(
-            f"""
-            <div class="tribe-inline-note">
-              Cache: <strong>{Path(cache_folder).name or str(cache_folder)}</strong> |
-              Texte: <strong>{options["text_model_name"]}</strong> |
-              Images envoyees au chat: <strong>{int(options["openai_max_images"])}</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+def render_action_progress(
+    progress_host,
+    steps: list[tuple[int, str]],
+) -> tuple[object, tp.Callable[[int], None]]:
+    bar = progress_host.progress(0, text=steps[0][1] if steps else "Preparation...")
+
+    def update(step_index: int) -> None:
+        index = max(0, min(step_index, len(steps) - 1))
+        value, message = steps[index]
+        bar.progress(value, text=message)
+
+    return bar, update
 
 
 @st.cache_resource(show_spinner=False)
@@ -559,7 +630,7 @@ def render_openai_chat_panel(
     with st.container(border=True):
         section_head(
             "OpenAI analyst",
-            "Panneau lateral compact pour interroger GPT-5.4 avec les timesteps et les donnees du run.",
+            "Chat lateral pour interpreter le run avec GPT-5.4 a partir des timesteps et des stats.",
             kicker="Chat",
         )
         if not api_key.strip():
@@ -580,6 +651,7 @@ def render_openai_chat_panel(
         chat_meta = st.columns(2, gap="small")
         chat_meta[0].metric("Model", model)
         chat_meta[1].metric("Images", int(max_images))
+        st.caption("Le prompt systeme demande une lecture prudente: patterns corticaux, valence plausible, emotions candidates et incertitudes obligatoires.")
         if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
             sessions[run_key] = {"messages": [], "previous_response_id": None}
             st.rerun()
@@ -590,7 +662,7 @@ def render_openai_chat_panel(
             max_images=max_images,
         )
         context_text, _, labels = context_bundle
-        with st.expander("Contexte envoye au modele", expanded=not session["messages"]):
+        with st.expander("Contexte envoye au modele", expanded=False):
             st.markdown(
                 "\n".join(f"- {label}" for label in labels)
                 if labels
@@ -774,7 +846,7 @@ def build_synced_player_html(run: PredictionRun) -> str:
     """
 
 
-def input_panel(cache_folder: Path) -> tuple[dict, dict]:
+def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
     whisperx_available = ExtractWordsFromAudio.whisperx_available()
     with st.sidebar:
         st.header("Configuration")
@@ -859,10 +931,13 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         )
         openai_api_key = st.text_input(
             "OPENAI_API_KEY",
-            value=os.getenv("OPENAI_API_KEY", ""),
+            value="",
             type="password",
-            help="Cle utilisee par le panneau de chat lateral. Laissez vide pour utiliser seulement la variable d'environnement.",
+            help="Cle utilisee par le panneau de chat lateral. Laissez vide pour utiliser la variable d'environnement.",
+            placeholder="Utilise OPENAI_API_KEY si laisse vide",
         )
+        if os.getenv("OPENAI_API_KEY", ""):
+            st.caption("Variable d'environnement OPENAI_API_KEY detectee. Laissez le champ vide pour l'utiliser.")
         st.caption(
             "Le dashboard utilise par defaut `unsloth/Llama-3.2-3B`, "
             "un backbone public non gated compatible avec le codeur texte du projet."
@@ -887,98 +962,94 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
     }
 
     request: dict[str, object] = {}
+    launch_pressed = False
     with st.container(border=True):
         section_head(
             "Input workspace",
-            "Choisissez une seule modalite par run. La colonne de droite affiche immediatement le contexte operationnel actif.",
+            "Choisissez une seule modalite par run. L'etat actif remonte dans le header, pas dans des panneaux lateraux redondants.",
             kicker="Source",
         )
-        workspace_col, ops_col = st.columns([1.7, 0.95], gap="large")
-        with workspace_col:
-            tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
-            with tabs[0]:
-                video_file = st.file_uploader(
-                    "Importer une video", type=["mp4", "mov", "avi", "mkv", "webm"]
-                )
-                if video_file is not None:
-                    request["video_path"] = save_upload(video_file, cache_folder / "uploads")
-                    st.video(video_file.getvalue())
-            with tabs[1]:
-                audio_file = st.file_uploader(
-                    "Importer un audio", type=["wav", "mp3", "flac", "ogg"]
-                )
-                if audio_file is not None:
-                    request["audio_path"] = save_upload(audio_file, cache_folder / "uploads")
-                    st.audio(audio_file.getvalue())
-            with tabs[2]:
-                text_input = st.text_area(
-                    "Texte brut",
-                    placeholder="Collez un script, une transcription ou un prompt narratif.",
-                    height=176,
-                )
-                text_file = st.file_uploader("ou importer un .txt", type=["txt"])
-                if text_file is not None:
-                    text_value = text_file.getvalue().decode("utf-8")
-                    st.text_area("Apercu du fichier", value=text_value, height=160)
-                    request["text"] = text_value
-                elif text_input.strip():
-                    request["text"] = text_input
-            with tabs[3]:
-                image_files = st.file_uploader(
-                    "Importer jusqu'a 2 images",
-                    type=["png", "jpg", "jpeg", "webp", "bmp"],
-                    accept_multiple_files=True,
-                )
-                if image_files:
-                    selected = image_files[:2]
-                    if len(image_files) > 2:
-                        st.warning("Seules les 2 premieres images seront utilisees.")
-                    image_paths = [save_upload(file, cache_folder / "uploads") for file in selected]
-                    request["image_paths"] = image_paths
-                    cols = st.columns(len(selected))
-                    for col, file in zip(cols, selected):
-                        with col:
-                            render_bounded_image(file.getvalue(), caption=file.name, max_height=240)
-        with ops_col:
-            section_head(
-                "Control rail",
-                "Etat du run, configuration active, et preparation du chat d'analyse.",
-                kicker="Overview",
+        tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
+        with tabs[0]:
+            video_file = st.file_uploader(
+                "Importer une video", type=["mp4", "mov", "avi", "mkv", "webm"]
             )
-            rail_cols = st.columns(2)
-            rail_cols[0].metric("Source", _format_request_label(request))
-            rail_cols[1].metric("Device", str(device).upper())
-            st.metric("Cache", Path(cache_folder).name or str(cache_folder))
-            st.metric("Chat model", openai_model)
+            if video_file is not None:
+                request["video_path"] = save_upload(video_file, cache_folder / "uploads")
+                st.video(video_file.getvalue())
+        with tabs[1]:
+            audio_file = st.file_uploader(
+                "Importer un audio", type=["wav", "mp3", "flac", "ogg"]
+            )
+            if audio_file is not None:
+                request["audio_path"] = save_upload(audio_file, cache_folder / "uploads")
+                st.audio(audio_file.getvalue())
+        with tabs[2]:
+            text_input = st.text_area(
+                "Texte brut",
+                placeholder="Collez un script, une transcription ou un prompt narratif.",
+                height=176,
+            )
+            text_file = st.file_uploader("ou importer un .txt", type=["txt"])
+            if text_file is not None:
+                text_value = text_file.getvalue().decode("utf-8")
+                st.text_area("Apercu du fichier", value=text_value, height=160)
+                request["text"] = text_value
+            elif text_input.strip():
+                request["text"] = text_input
+        with tabs[3]:
+            image_files = st.file_uploader(
+                "Importer jusqu'a 2 images",
+                type=["png", "jpg", "jpeg", "webp", "bmp"],
+                accept_multiple_files=True,
+            )
+            if image_files:
+                selected = image_files[:2]
+                if len(image_files) > 2:
+                    st.warning("Seules les 2 premieres images seront utilisees.")
+                image_paths = [save_upload(file, cache_folder / "uploads") for file in selected]
+                request["image_paths"] = image_paths
+                cols = st.columns(len(selected))
+                for col, file in zip(cols, selected):
+                    with col:
+                        render_bounded_image(file.getvalue(), caption=file.name, max_height=240)
+
+        action_col, button_col = st.columns([1.45, 0.78], gap="large")
+        with action_col:
             st.markdown(
-                f"""
-                <div class="tribe-inline-note">
-                  Direct text: <strong>{'on' if direct_text else 'off'}</strong><br/>
-                  WhisperX: <strong>{'on' if transcribe else 'off'}</strong><br/>
-                  Image clip: <strong>{image_duration:.1f}s @ {image_fps} fps</strong>
+                """
+                <div class="tribe-slimbar">
+                  <div>
+                    <div class="tribe-slimbar-title">Run en un clic</div>
+                    <div class="tribe-slimbar-copy">
+                      Une seule source active a la fois. Preparation, inference, vues 2D, 3D et exports se chainent automatiquement.
+                    </div>
+                  </div>
+                  <div class="tribe-pill">
+                    <div class="tribe-pill-label">Source active</div>
+                    <div class="tribe-pill-value">"""
+                + html.escape(_format_request_label(request))
+                + """</div>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-    return request, options
+        with button_col:
+            launch_pressed = st.button("Lancer la prediction", type="primary", width="stretch")
+            st.markdown(
+                f"""
+                <div class="tribe-progress-caption">
+                  Checkpoint <strong>{html.escape(str(checkpoint).split('/')[-1])}</strong><br/>
+                  Chat <strong>{html.escape(openai_model)}</strong>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    return request, options, launch_pressed
 
 
-def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
-    render_run_prep_panel(cache_folder, request, options)
-
-    launch_cols = st.columns([1.35, 0.8], gap="large")
-    with launch_cols[0]:
-        st.markdown(
-            """
-            <div class="tribe-inline-note">
-              Le run charge le backbone local, prepare les evenements, puis construit les surfaces et exports du dashboard.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with launch_cols[1]:
-        launch_pressed = st.button("Lancer la prediction", type="primary", width="stretch")
-
+def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_pressed: bool) -> None:
     if launch_pressed:
         if not request:
             st.error("Importez d'abord une video, un audio ou un texte.")
@@ -987,64 +1058,83 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
         if len(active_inputs) != 1:
             st.error("Choisissez une seule modalite a la fois: video, audio, texte ou images.")
             return
+        progress_host = st.empty()
+        progress_steps = [
+            (6, "Validation du run..."),
+            (18, "Chargement du modele..."),
+            (36, "Preparation des evenements..."),
+            (68, "Inference GPU en cours..."),
+            (84, "Mise en cache des vues du dashboard..."),
+            (100, "Run termine."),
+        ]
+        progress_bar, update_progress = render_action_progress(progress_host, progress_steps)
         try:
-            with st.spinner("Chargement du modele..."):
-                model = get_model(
-                    options["checkpoint"],
-                    str(cache_folder),
-                    options["device"],
-                    options["num_workers"],
-                    options["text_model_name"],
-                )
+            update_progress(1)
+            model = get_model(
+                options["checkpoint"],
+                str(cache_folder),
+                options["device"],
+                options["num_workers"],
+                options["text_model_name"],
+            )
             if "image_paths" in request:
                 image_paths = [Path(p) for p in request["image_paths"]]
                 image_runs: list[PredictionRun] = []
-                with st.spinner("Preparation des evenements image..."):
-                    for image_path in image_paths:
-                        events, input_kind = prepare_events(
-                            cache_folder=cache_folder,
-                            image_path=image_path,
-                            image_duration=options["image_duration"],
-                            image_fps=options["image_fps"],
-                        )
-                        image_runs.append(
-                            predict_from_prepared_events(
-                                model,
-                                events,
-                                input_kind=input_kind,
-                                source_path=image_path,
-                                verbose=False,
-                            )
-                        )
-                run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
-            else:
-                with st.spinner("Preparation des evenements..."):
+                total_images = max(1, len(image_paths))
+                for idx, image_path in enumerate(image_paths, start=1):
+                    update_progress(2)
                     events, input_kind = prepare_events(
                         cache_folder=cache_folder,
-                        transcribe=options["transcribe"],
-                        direct_text=options["direct_text"],
-                        seconds_per_word=options["seconds_per_word"],
-                        max_context_words=options["max_context_words"],
-                        **request,
+                        image_path=image_path,
+                        image_duration=options["image_duration"],
+                        image_fps=options["image_fps"],
                     )
-                with st.spinner("Inference en cours..."):
-                    source_path = next(
-                        (value for key, value in request.items() if key.endswith("_path")),
-                        None,
+                    progress_bar.progress(
+                        min(76, 40 + int((idx - 1) / total_images * 26)),
+                        text=f"Inference image {idx}/{total_images}...",
                     )
-                    raw_text = request.get("text")
-                    run = predict_from_prepared_events(
-                        model,
-                        events,
-                        input_kind=input_kind,
-                        source_path=Path(source_path) if source_path else None,
-                        raw_text=str(raw_text) if raw_text is not None else None,
+                    image_runs.append(
+                        predict_from_prepared_events(
+                            model,
+                            events,
+                            input_kind=input_kind,
+                            source_path=image_path,
+                            verbose=False,
+                        )
                     )
+                run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
+            else:
+                update_progress(2)
+                events, input_kind = prepare_events(
+                    cache_folder=cache_folder,
+                    transcribe=options["transcribe"],
+                    direct_text=options["direct_text"],
+                    seconds_per_word=options["seconds_per_word"],
+                    max_context_words=options["max_context_words"],
+                    **request,
+                )
+                update_progress(3)
+                source_path = next(
+                    (value for key, value in request.items() if key.endswith("_path")),
+                    None,
+                )
+                raw_text = request.get("text")
+                run = predict_from_prepared_events(
+                    model,
+                    events,
+                    input_kind=input_kind,
+                    source_path=Path(source_path) if source_path else None,
+                    raw_text=str(raw_text) if raw_text is not None else None,
+                )
+            update_progress(4)
             st.session_state["prediction_run"] = run
             st.session_state["mosaic_requested"] = False
             st.session_state["interactive_html_by_timestep"] = {}
             st.session_state["video_exports"] = {}
+            update_progress(5)
+            st.success("Prediction prete. Les vues et exports sont disponibles plus bas.")
         except Exception as exc:
+            progress_host.empty()
             st.exception(exc)
 
 
@@ -1069,11 +1159,12 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
     if isinstance(run, ImageComparisonRun):
         return comparison_results_panel(run)
 
+    run_key = get_run_cache_key(run)
     summary = summarize_predictions(run.preds)
     with st.container(border=True):
         section_head(
             "Run status",
-            "Vue compacte du run courant avec volume de prediction, source active et intensite moyenne.",
+            "Resume numerique du run courant.",
             kicker="Metrics",
         )
         metric_cols = st.columns(5, gap="small")
@@ -1088,7 +1179,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         with st.container(border=True):
             section_head(
                 "Timeline surface",
-                "Courbe d'activite globale et lecture cerebrale en boucle dans un seul espace de travail.",
+                "Courbe globale et lecture cerebrale en boucle dans le meme espace de travail.",
                 kicker="Workspace",
             )
             chart_col, animation_col = st.columns([0.9, 1.15], gap="large")
@@ -1113,7 +1204,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         with st.container(border=True):
             section_head(
                 "Deep views",
-                "Toutes les vues avancees sont regroupees ici pour garder l'app dense et lisible.",
+                "Vues avancees et exports media.",
                 kicker="Views",
             )
             tab_labels = ["3D anime", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
@@ -1126,10 +1217,24 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
             if synced_media_available:
                 with tabs[0]:
                     sync_cache = st.session_state.setdefault("sync_player_html", {})
-                    sync_key = get_run_cache_key(run)
-                    if st.button("Preparer le lecteur synchronise", width="stretch"):
-                        with st.spinner("Preparation du lecteur synchronise..."):
-                            sync_cache[sync_key] = build_synced_player_html(run)
+                    sync_key = run_key
+                    if st.button(
+                        "Preparer le lecteur synchronise",
+                        width="stretch",
+                        key=f"prepare_sync_{run_key}",
+                    ):
+                        sync_progress_host = st.empty()
+                        _, sync_progress = render_action_progress(
+                            sync_progress_host,
+                            [
+                                (12, "Assemblage du media source..."),
+                                (56, "Generation des surfaces synchronisees..."),
+                                (100, "Lecteur synchronise pret."),
+                            ],
+                        )
+                        sync_progress(1)
+                        sync_cache[sync_key] = build_synced_player_html(run)
+                        sync_progress(2)
                     sync_html = sync_cache.get(sync_key)
                     if sync_html:
                         components.html(sync_html, height=860, scrolling=False)
@@ -1172,15 +1277,25 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                 )
                 export_key = f"{max_timesteps}:{fps_options[fps_label]}"
                 video_cache = st.session_state.setdefault("video_exports", {})
-                if st.button("Generer le MP4", width="stretch"):
-                    with st.spinner("Generation du MP4..."):
-                        video_path = export_prediction_video(
-                            run,
-                            output_folder=cache_folder / "exports",
-                            max_timesteps=max_timesteps,
-                            interpolated_fps=fps_options[fps_label],
-                        )
+                if st.button("Generer le MP4", width="stretch", key=f"export_mp4_{run_key}"):
+                    mp4_progress_host = st.empty()
+                    _, mp4_progress = render_action_progress(
+                        mp4_progress_host,
+                        [
+                            (10, "Preparation des frames..."),
+                            (52, "Encodage de la video..."),
+                            (100, "MP4 pret."),
+                        ],
+                    )
+                    mp4_progress(1)
+                    video_path = export_prediction_video(
+                        run,
+                        output_folder=cache_folder / "exports",
+                        max_timesteps=max_timesteps,
+                        interpolated_fps=fps_options[fps_label],
+                    )
                     video_cache[export_key] = str(video_path)
+                    mp4_progress(2)
                 video_path_str = video_cache.get(export_key)
                 if video_path_str:
                     video_path = Path(video_path_str)
@@ -1196,11 +1311,25 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                     st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
 
             with tabs[tab_offset + 2]:
-                if st.button("Generer la mosaique", width="stretch"):
+                mosaic_cache = st.session_state.setdefault("mosaic_figures", {})
+                mosaic_key = f"mosaic:{run_key}"
+                if st.button("Generer la mosaique", width="stretch", key=f"mosaic_{run_key}"):
                     st.session_state["mosaic_requested"] = True
-                if st.session_state.get("mosaic_requested"):
-                    mosaic = render_prediction_mosaic(run)
-                    st.pyplot(mosaic, clear_figure=True, width="stretch")
+                    if mosaic_key not in mosaic_cache:
+                        mosaic_progress_host = st.empty()
+                        _, mosaic_progress = render_action_progress(
+                            mosaic_progress_host,
+                            [
+                                (14, "Selection des timesteps..."),
+                                (62, "Rendu des panneaux corticaux..."),
+                                (100, "Mosaique prete."),
+                            ],
+                        )
+                        mosaic_progress(1)
+                        mosaic_cache[mosaic_key] = render_prediction_mosaic(run)
+                        mosaic_progress(2)
+                if st.session_state.get("mosaic_requested") and mosaic_key in mosaic_cache:
+                    st.pyplot(mosaic_cache[mosaic_key], clear_figure=False, width="stretch")
 
             with tabs[tab_offset + 3]:
                 st.dataframe(run.events, width="stretch", height=320)
@@ -1209,16 +1338,19 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         with st.container(border=True):
             section_head(
                 "Inspector",
-                "La source chargee et la table brute par timestep vivent dans le panneau de droite.",
+                "Apercu de la source et donnees brutes.",
                 kicker="Inspector",
             )
-            render_input_preview(run)
-            render_raw_timestep_table(run, height=312)
+            preview_tab, data_tab = st.tabs(["Preview", "Timesteps"])
+            with preview_tab:
+                render_input_preview(run)
+            with data_tab:
+                render_raw_timestep_table(run, height=420)
 
         with st.container(border=True):
             section_head(
                 "Exports",
-                "Telechargements immediats sans quitter le workspace.",
+                "Telechargements rapides.",
                 kicker="Output",
             )
             export_cols = st.columns(3)
@@ -1250,7 +1382,7 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
     with st.container(border=True):
         section_head(
             "Image comparison",
-            "Deux colonnes synchrones, meme echelle, meme maillage cortical, lecture directe sans surcharge de chrome.",
+            "Deux colonnes synchrones pour comparer rapidement les patterns.",
             kicker="Compare",
         )
         metric_cols = st.columns(4)
@@ -1265,7 +1397,7 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             with st.container(border=True):
                 section_head(
                     f"Image {idx}",
-                    "Preview, playback cortical et 3D orientable dans la meme colonne.",
+                    "Preview, playback cortical et 3D orientable.",
                     kicker="Panel",
                 )
                 render_input_preview(item)
@@ -1307,10 +1439,12 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
 def main() -> None:
     configure_runtime_noise()
     apply_theme()
-    hero()
+    hero_slot = st.empty()
     cache_folder = Path(st.sidebar.text_input("Dossier cache", value="./cache"))
-    request, options = input_panel(cache_folder)
-    run_prediction_ui(cache_folder, request, options)
+    request, options, launch_pressed = input_panel(cache_folder)
+    with hero_slot.container():
+        hero(request, options, cache_folder)
+    run_prediction_ui(cache_folder, request, options, launch_pressed)
 
     run = st.session_state.get("prediction_run")
     if run is not None:
