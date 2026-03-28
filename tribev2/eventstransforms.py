@@ -6,8 +6,11 @@
 
 import contextlib
 import copy
+import importlib.util
 import logging
 import os
+import shutil
+import sys
 import typing as tp
 import warnings
 from pathlib import Path
@@ -92,6 +95,38 @@ class ExtractWordsFromAudio(EventsTransform):
     overwrite: bool = False
 
     @staticmethod
+    def _resolve_executable(name: str) -> str | None:
+        direct = shutil.which(name)
+        if direct is not None:
+            return direct
+        exe_name = f"{name}.exe" if os.name == "nt" and not name.endswith(".exe") else name
+        candidates = [
+            Path(sys.executable).parent / exe_name,
+            Path(sys.executable).parent / "Scripts" / exe_name,
+            Path(sys.prefix) / "Scripts" / exe_name,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
+
+    @classmethod
+    def whisperx_command(cls) -> list[str] | None:
+        uvx = cls._resolve_executable("uvx")
+        if uvx is not None:
+            return [uvx, "whisperx"]
+        uv = cls._resolve_executable("uv")
+        if uv is not None:
+            return [uv, "tool", "run", "whisperx"]
+        if importlib.util.find_spec("whisperx") is not None:
+            return [sys.executable, "-m", "whisperx"]
+        return None
+
+    @classmethod
+    def whisperx_available(cls) -> bool:
+        return cls.whisperx_command() is not None
+
+    @staticmethod
     def _get_transcript_from_audio(wav_filename: Path, language: str) -> pd.DataFrame:
         import json
         import os
@@ -105,13 +140,18 @@ class ExtractWordsFromAudio(EventsTransform):
             raise ValueError(f"Language {language} not supported")
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16"
+        compute_type = "float16" if device == "cuda" else "int8"
+        launcher = ExtractWordsFromAudio.whisperx_command()
+        if launcher is None:
+            raise RuntimeError(
+                "whisperx transcription requires `uvx whisperx`, `uv tool run whisperx`, "
+                "or a local `python -m whisperx` installation. Install `uv` in the active "
+                "environment, or install `whisperx` directly."
+            )
 
         with tempfile.TemporaryDirectory() as output_dir:
-            logger.info("Running whisperx via uvx...")
-            cmd = [
-                "uvx",
-                "whisperx",
+            logger.info("Running whisperx...")
+            cmd = launcher + [
                 str(wav_filename),
                 "--model",
                 "large-v3",
@@ -136,10 +176,8 @@ class ExtractWordsFromAudio(EventsTransform):
                 result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             except FileNotFoundError as exc:
                 raise RuntimeError(
-                    "whisperx transcription requires `uvx whisperx` to be "
-                    "installed and available in PATH. Install `uv`, then run "
-                    "`uv tool install whisperx`, or use audio_only/direct_text "
-                    "mode."
+                    "whisperx transcription launcher was not found. Install `uv` "
+                    "in the active environment, or install `whisperx` directly."
                 ) from exc
             if result.returncode != 0:
                 raise RuntimeError(f"whisperx failed:\n{result.stderr}")

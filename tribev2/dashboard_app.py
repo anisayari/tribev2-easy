@@ -15,6 +15,8 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
+from tribev2.eventstransforms import ExtractWordsFromAudio
+
 
 def _apply_warning_filters() -> None:
     warnings.filterwarnings(
@@ -348,7 +350,7 @@ def build_synced_player_html(run: PredictionRun) -> str:
 
 
 def input_panel(cache_folder: Path) -> tuple[dict, dict]:
-    uvx_available = shutil.which("uvx") is not None
+    whisperx_available = ExtractWordsFromAudio.whisperx_available()
     with st.sidebar:
         st.header("Configuration")
         checkpoint = st.text_input("Checkpoint", value="facebook/tribev2")
@@ -384,8 +386,8 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         transcribe = st.checkbox(
             "Transcrire l'audio via whisperx",
             value=False,
-            disabled=not uvx_available,
-            help="Necessite `uvx whisperx` dans le PATH.",
+            disabled=not whisperx_available,
+            help="Utilise `uvx whisperx`, `uv tool run whisperx`, ou `python -m whisperx`.",
         )
         image_duration = st.slider(
             "Duree clip image",
@@ -402,8 +404,10 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             value=6,
             step=1,
         )
-        if not uvx_available:
-            st.info("Transcription desactivee: `uvx whisperx` n'est pas installe.")
+        if not whisperx_available:
+            st.info(
+                "Transcription desactivee: WhisperX n'est pas detecte dans l'environnement actif."
+            )
         st.caption(
             "Le dashboard utilise par defaut `unsloth/Llama-3.2-3B`, "
             "un backbone public non gated compatible avec le codeur texte du projet."

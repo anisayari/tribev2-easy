@@ -5,6 +5,7 @@ from PIL import Image
 
 from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
+from tribev2.eventstransforms import ExtractWordsFromAudio
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
     ImageComparisonRun,
@@ -247,3 +248,20 @@ def test_build_result_interpretation_uses_text_cues_for_affect():
     assert interpretation["zone"]
     assert interpretation["systems"]
     assert interpretation["affect"]["valence"] in {"plutot positive", "mixte", "plutot negative"}
+
+
+def test_whisperx_detection_finds_executable_next_to_env(monkeypatch, tmp_path: Path):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    uvx = scripts / "uvx.exe"
+    uvx.write_bytes(b"")
+
+    monkeypatch.setattr(easy_module.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr("tribev2.eventstransforms.sys.prefix", str(tmp_path))
+    monkeypatch.setattr("tribev2.eventstransforms.sys.executable", str(tmp_path / "python.exe"))
+    monkeypatch.setattr("tribev2.eventstransforms.shutil.which", lambda name: None)
+
+    cmd = ExtractWordsFromAudio.whisperx_command()
+
+    assert cmd is not None
+    assert cmd[0].endswith("uvx.exe")
