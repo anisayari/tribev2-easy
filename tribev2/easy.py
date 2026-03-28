@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 from dataclasses import dataclass
 from functools import lru_cache
 import io
@@ -184,6 +185,20 @@ def load_model(
     )
 
 
+def _prepare_media_events_with_quiet_stderr(
+    events: pd.DataFrame,
+    *,
+    audio_only: bool,
+) -> pd.DataFrame:
+    """Shield Streamlit runs from tqdm/stderr issues inside event transforms."""
+    stderr_buffer = io.StringIO()
+    try:
+        with redirect_stderr(stderr_buffer):
+            return get_audio_and_text_events(events, audio_only=audio_only)
+    finally:
+        stderr_buffer.close()
+
+
 def prepare_events(
     *,
     cache_folder: str | Path,
@@ -261,7 +276,7 @@ def prepare_events(
                 }
             ]
         )
-        return get_audio_and_text_events(events, audio_only=True), "image"
+        return _prepare_media_events_with_quiet_stderr(events, audio_only=True), "image"
 
     event_type = "Audio" if audio_path is not None else "Video"
     path = Path(audio_path or video_path)  # type: ignore[arg-type]
@@ -276,7 +291,10 @@ def prepare_events(
             }
         ]
     )
-    return get_audio_and_text_events(events, audio_only=not transcribe), event_type.lower()
+    return (
+        _prepare_media_events_with_quiet_stderr(events, audio_only=not transcribe),
+        event_type.lower(),
+    )
 
 
 def predict_from_prepared_events(
@@ -288,7 +306,12 @@ def predict_from_prepared_events(
     raw_text: str | None = None,
     verbose: bool = True,
 ) -> PredictionRun:
-    preds, segments = model.predict(events=events, verbose=verbose)
+    stderr_buffer = io.StringIO()
+    try:
+        with redirect_stderr(stderr_buffer):
+            preds, segments = model.predict(events=events, verbose=verbose)
+    finally:
+        stderr_buffer.close()
     return PredictionRun(
         events=events,
         preds=preds,

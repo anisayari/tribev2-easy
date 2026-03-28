@@ -28,12 +28,18 @@ This fork keeps the original TRIBE v2 codebase, then adds a cleaner local workfl
 - Support for newer PyTorch builds so TRIBE can run on Blackwell GPUs such as the RTX 5090
 - Public default text backbone: [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) instead of the gated Meta Llama repo
 - Packaged Streamlit dashboard with local upload, prediction, export, and visualization flow
+- Integrated OpenAI GPT analysis panel to help explain timestep images and run-level outputs directly inside the dashboard
 - Direct text mode without the original TTS + ASR round-trip
 - Static image support, including side-by-side comparison for up to two images
 - Interactive 3D cortical viewer in the browser
 - MP4 export of prediction dynamics over time
-- Built-in explanation panels in the dashboard, with notes grounded in the paper, the official notebook, and the Meta blog post
 - Safer local plotting and ffmpeg handling for the packaged demo workflow
+
+## Dashboard Overview
+
+![TRIBE v2 Easy dashboard](docs/dashboard-overview.png)
+
+The fork ships with a compact local dashboard for running TRIBE v2 on your own video, audio, text, or image inputs. It centralizes upload, GPU inference, 2D and 3D cortical views, exports, and an integrated GPT assistant that can inspect timestep images plus raw run data to help explain the results.
 
 ## Quick start
 
@@ -110,7 +116,7 @@ The dashboard supports:
 - Timestep-by-timestep cortical visualization
 - Interactive 3D cortical view in the browser
 - MP4 export of prediction dynamics
-- Built-in explanation of what the brain maps show
+- Integrated GPT analysis support for explaining timestep images and run summaries
 - CSV / NPY export of predictions
 
 ## Practical notes

@@ -9,6 +9,7 @@ import mimetypes
 import os
 from pathlib import Path
 import shutil
+import traceback
 import typing as tp
 import uuid
 
@@ -113,16 +114,42 @@ def apply_theme() -> None:
               linear-gradient(180deg, var(--navy) 0%, #121d2b 55%, var(--navy-soft) 100%);
             border-right: 1px solid rgba(255, 255, 255, 0.06);
           }
-          [data-testid="stSidebar"] * {
+          [data-testid="stSidebar"] h1,
+          [data-testid="stSidebar"] h2,
+          [data-testid="stSidebar"] h3,
+          [data-testid="stSidebar"] label,
+          [data-testid="stSidebar"] p,
+          [data-testid="stSidebar"] span,
+          [data-testid="stSidebar"] small,
+          [data-testid="stSidebar"] code {
             color: #eef3f8;
           }
           [data-testid="stSidebar"] .stTextInput input,
           [data-testid="stSidebar"] .stTextArea textarea,
           [data-testid="stSidebar"] .stNumberInput input,
           [data-testid="stSidebar"] [data-baseweb="select"] > div {
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.10);
-            color: #f7fafc;
+            background: rgba(246, 248, 251, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            color: #0f1722;
+          }
+          [data-testid="stSidebar"] .stTextInput input::placeholder,
+          [data-testid="stSidebar"] .stTextArea textarea::placeholder,
+          [data-testid="stSidebar"] .stNumberInput input::placeholder {
+            color: #6b7787;
+            opacity: 1;
+          }
+          [data-testid="stSidebar"] .stTextInput input,
+          [data-testid="stSidebar"] .stTextArea textarea,
+          [data-testid="stSidebar"] .stNumberInput input {
+            caret-color: #0f1722;
+          }
+          [data-testid="stSidebar"] [data-baseweb="select"] * {
+            color: #0f1722;
+          }
+          [data-baseweb="popover"] [role="option"],
+          [data-baseweb="popover"] [role="listbox"] *,
+          [data-baseweb="popover"] [data-testid="stMarkdownContainer"] * {
+            color: #0f1722;
           }
           [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] {
             padding-top: 0.1rem;
@@ -313,6 +340,34 @@ def apply_theme() -> None:
             font-size: 0.78rem;
             color: var(--muted);
           }
+          .tribe-busybutton {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.58rem;
+            width: 100%;
+            min-height: 2.6rem;
+            padding: 0.7rem 1rem;
+            border-radius: 12px;
+            border: 1px solid rgba(15, 23, 34, 0.10);
+            background: linear-gradient(135deg, rgba(112, 123, 140, 0.28), rgba(86, 95, 111, 0.22));
+            color: rgba(15, 23, 34, 0.78);
+            font-weight: 600;
+            user-select: none;
+            pointer-events: none;
+            opacity: 0.95;
+          }
+          .tribe-busyspinner {
+            width: 0.95rem;
+            height: 0.95rem;
+            border-radius: 999px;
+            border: 2px solid rgba(15, 23, 34, 0.16);
+            border-top-color: rgba(15, 23, 34, 0.82);
+            animation: tribe-spin 0.75s linear infinite;
+          }
+          @keyframes tribe-spin {
+            to { transform: rotate(360deg); }
+          }
           .tribe-keyline {
             margin: 0.15rem 0 0.7rem 0;
             height: 1px;
@@ -439,6 +494,28 @@ def render_action_progress(
         bar.progress(value, text=message)
 
     return bar, update
+
+
+def render_busy_prediction_button(label: str = "Inference en cours...") -> None:
+    st.markdown(
+        f"""
+        <div class="tribe-busybutton" aria-disabled="true">
+          <span class="tribe-busyspinner"></span>
+          <span>{html.escape(label)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def clear_prediction_job_state() -> None:
+    for key in (
+        "prediction_running",
+        "pending_prediction_request",
+        "pending_prediction_options",
+        "pending_prediction_cache_folder",
+    ):
+        st.session_state.pop(key, None)
 
 
 @st.cache_resource(show_spinner=False)
@@ -1036,7 +1113,15 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
                 unsafe_allow_html=True,
             )
         with button_col:
-            launch_pressed = st.button("Lancer la prediction", type="primary", width="stretch")
+            if st.session_state.get("prediction_running", False):
+                render_busy_prediction_button()
+            else:
+                launch_pressed = st.button(
+                    "Lancer la prediction",
+                    type="primary",
+                    width="stretch",
+                    key="launch_prediction",
+                )
             st.markdown(
                 f"""
                 <div class="tribe-progress-caption">
@@ -1050,6 +1135,18 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
 
 
 def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_pressed: bool) -> None:
+    notice = st.session_state.pop("prediction_notice", None)
+    if notice:
+        st.success(str(notice))
+
+    error_state = st.session_state.pop("prediction_error", None)
+    if error_state:
+        st.error(str(error_state.get("message", "La prediction a echoue.")))
+        trace = str(error_state.get("traceback", "")).strip()
+        if trace:
+            with st.expander("Traceback", expanded=False):
+                st.code(trace)
+
     if launch_pressed:
         if not request:
             st.error("Importez d'abord une video, un audio ou un texte.")
@@ -1058,106 +1155,140 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
         if len(active_inputs) != 1:
             st.error("Choisissez une seule modalite a la fois: video, audio, texte ou images.")
             return
-        progress_host = st.empty()
-        progress_steps = [
-            (6, "Validation du run..."),
-            (18, "Chargement du modele..."),
-            (36, "Preparation des evenements..."),
-            (68, "Inference GPU en cours..."),
-            (84, "Mise en cache des vues du dashboard..."),
-            (100, "Run termine."),
-        ]
-        progress_bar, update_progress = render_action_progress(progress_host, progress_steps)
+        st.session_state["prediction_running"] = True
+        st.session_state["pending_prediction_request"] = dict(request)
+        st.session_state["pending_prediction_options"] = dict(options)
+        st.session_state["pending_prediction_cache_folder"] = str(cache_folder)
         LOGGER.info(
-            "Prediction requested | source=%s | checkpoint=%s | device=%s | workers=%s",
+            "Prediction queued | source=%s | checkpoint=%s | device=%s | workers=%s",
             _format_request_label(request),
             options["checkpoint"],
             options["device"],
             options["num_workers"],
         )
-        try:
-            update_progress(1)
-            model = get_model(
-                options["checkpoint"],
-                str(cache_folder),
-                options["device"],
-                options["num_workers"],
-                options["text_model_name"],
-            )
-            if "image_paths" in request:
-                image_paths = [Path(p) for p in request["image_paths"]]
-                image_runs: list[PredictionRun] = []
-                total_images = max(1, len(image_paths))
-                for idx, image_path in enumerate(image_paths, start=1):
-                    LOGGER.info("Preparing image run | index=%s/%s | path=%s", idx, total_images, image_path)
-                    update_progress(2)
-                    events, input_kind = prepare_events(
-                        cache_folder=cache_folder,
-                        image_path=image_path,
-                        image_duration=options["image_duration"],
-                        image_fps=options["image_fps"],
-                    )
-                    progress_bar.progress(
-                        min(76, 40 + int((idx - 1) / total_images * 26)),
-                        text=f"Inference image {idx}/{total_images}...",
-                    )
-                    image_runs.append(
-                        predict_from_prepared_events(
-                            model,
-                            events,
-                            input_kind=input_kind,
-                            source_path=image_path,
-                            verbose=False,
-                        )
-                    )
-                run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
-            else:
+        st.rerun()
+
+    if not st.session_state.get("prediction_running", False):
+        return
+
+    request = tp.cast(dict[str, object], st.session_state.get("pending_prediction_request") or {})
+    options = tp.cast(dict[str, object], st.session_state.get("pending_prediction_options") or {})
+    pending_cache = st.session_state.get("pending_prediction_cache_folder")
+    cache_folder = Path(str(pending_cache)) if pending_cache else cache_folder
+    if not request or not options:
+        clear_prediction_job_state()
+        st.session_state["prediction_error"] = {
+            "message": "Le run en attente est incomplet. Relancez la prediction.",
+            "traceback": "",
+        }
+        st.rerun()
+
+    progress_host = st.empty()
+    progress_steps = [
+        (6, "Validation du run..."),
+        (18, "Chargement du modele..."),
+        (36, "Preparation des evenements..."),
+        (68, "Inference GPU en cours..."),
+        (84, "Mise en cache des vues du dashboard..."),
+        (100, "Run termine."),
+    ]
+    progress_bar, update_progress = render_action_progress(progress_host, progress_steps)
+    LOGGER.info(
+        "Prediction started | source=%s | checkpoint=%s | device=%s | workers=%s",
+        _format_request_label(request),
+        options["checkpoint"],
+        options["device"],
+        options["num_workers"],
+    )
+    try:
+        update_progress(1)
+        model = get_model(
+            options["checkpoint"],
+            str(cache_folder),
+            options["device"],
+            options["num_workers"],
+            options["text_model_name"],
+        )
+        if "image_paths" in request:
+            image_paths = [Path(p) for p in request["image_paths"]]
+            image_runs: list[PredictionRun] = []
+            total_images = max(1, len(image_paths))
+            for idx, image_path in enumerate(image_paths, start=1):
+                LOGGER.info("Preparing image run | index=%s/%s | path=%s", idx, total_images, image_path)
                 update_progress(2)
                 events, input_kind = prepare_events(
                     cache_folder=cache_folder,
-                    transcribe=options["transcribe"],
-                    direct_text=options["direct_text"],
-                    seconds_per_word=options["seconds_per_word"],
-                    max_context_words=options["max_context_words"],
-                    **request,
+                    image_path=image_path,
+                    image_duration=options["image_duration"],
+                    image_fps=options["image_fps"],
                 )
-                update_progress(3)
-                source_path = next(
-                    (value for key, value in request.items() if key.endswith("_path")),
-                    None,
+                progress_bar.progress(
+                    min(76, 40 + int((idx - 1) / total_images * 26)),
+                    text=f"Inference image {idx}/{total_images}...",
                 )
-                raw_text = request.get("text")
-                run = predict_from_prepared_events(
-                    model,
-                    events,
-                    input_kind=input_kind,
-                    source_path=Path(source_path) if source_path else None,
-                    raw_text=str(raw_text) if raw_text is not None else None,
+                image_runs.append(
+                    predict_from_prepared_events(
+                        model,
+                        events,
+                        input_kind=input_kind,
+                        source_path=image_path,
+                        verbose=False,
+                    )
                 )
-            update_progress(4)
-            st.session_state["prediction_run"] = run
-            st.session_state["mosaic_requested"] = False
-            st.session_state["interactive_html_by_timestep"] = {}
-            st.session_state["video_exports"] = {}
-            update_progress(5)
-            if isinstance(run, ImageComparisonRun):
-                LOGGER.info(
-                    "Prediction completed | comparison=%s | runs=%s",
-                    True,
-                    len(run.runs),
-                )
-            else:
-                LOGGER.info(
-                    "Prediction completed | input_kind=%s | timesteps=%s | vertices=%s",
-                    run.input_kind,
-                    len(run.preds),
-                    run.preds.shape[1],
-                )
-            st.success("Prediction prete. Les vues et exports sont disponibles plus bas.")
-        except Exception as exc:
-            LOGGER.exception("Prediction failed | source=%s", _format_request_label(request))
-            progress_host.empty()
-            st.exception(exc)
+            run = image_runs[0] if len(image_runs) == 1 else ImageComparisonRun(runs=image_runs)
+        else:
+            update_progress(2)
+            events, input_kind = prepare_events(
+                cache_folder=cache_folder,
+                transcribe=options["transcribe"],
+                direct_text=options["direct_text"],
+                seconds_per_word=options["seconds_per_word"],
+                max_context_words=options["max_context_words"],
+                **request,
+            )
+            update_progress(3)
+            source_path = next(
+                (value for key, value in request.items() if key.endswith("_path")),
+                None,
+            )
+            raw_text = request.get("text")
+            run = predict_from_prepared_events(
+                model,
+                events,
+                input_kind=input_kind,
+                source_path=Path(source_path) if source_path else None,
+                raw_text=str(raw_text) if raw_text is not None else None,
+            )
+        update_progress(4)
+        st.session_state["prediction_run"] = run
+        st.session_state["mosaic_requested"] = False
+        st.session_state["interactive_html_by_timestep"] = {}
+        st.session_state["video_exports"] = {}
+        update_progress(5)
+        if isinstance(run, ImageComparisonRun):
+            LOGGER.info(
+                "Prediction completed | comparison=%s | runs=%s",
+                True,
+                len(run.runs),
+            )
+        else:
+            LOGGER.info(
+                "Prediction completed | input_kind=%s | timesteps=%s | vertices=%s",
+                run.input_kind,
+                len(run.preds),
+                run.preds.shape[1],
+            )
+        clear_prediction_job_state()
+        st.session_state["prediction_notice"] = "Prediction prete. Les vues et exports sont disponibles plus bas."
+        st.rerun()
+    except Exception as exc:
+        LOGGER.exception("Prediction failed | source=%s", _format_request_label(request))
+        clear_prediction_job_state()
+        st.session_state["prediction_error"] = {
+            "message": f"La prediction a echoue: {exc}",
+            "traceback": traceback.format_exc(),
+        }
+        st.rerun()
 
 
 def render_input_preview(run: PredictionRun) -> None:
