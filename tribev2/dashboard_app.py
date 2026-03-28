@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import io
+import json
 import logging
+import mimetypes
 from pathlib import Path
 import shutil
 import typing as tp
@@ -50,12 +53,14 @@ from tribev2.easy import (
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
+    collect_timestep_metadata,
     describe_timestep,
     export_prediction_video,
     load_model,
     predict_from_prepared_events,
     prepare_events,
     render_brain_figure,
+    render_brain_panel_bytes,
     render_interactive_brain_html,
     render_prediction_mosaic,
     segment_preview,
@@ -170,6 +175,175 @@ def render_explainability_report(report: dict[str, object]) -> None:
         for bullet in tp.cast(list[str], section_dict["bullets"]):
             st.markdown(f"- {bullet}")
     render_source_links(tp.cast(list[tuple[str, str]], report.get("sources", [])))
+
+
+def build_data_uri(raw_bytes: bytes, mime_type: str) -> str:
+    encoded = base64.b64encode(raw_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def guess_media_mime(path: Path) -> str:
+    guessed, _ = mimetypes.guess_type(path.name)
+    if guessed:
+        return guessed
+    if path.suffix.lower() in {".mp4", ".mov", ".m4v"}:
+        return "video/mp4"
+    if path.suffix.lower() in {".webm"}:
+        return "video/webm"
+    if path.suffix.lower() in {".mp3"}:
+        return "audio/mpeg"
+    if path.suffix.lower() in {".wav"}:
+        return "audio/wav"
+    if path.suffix.lower() in {".ogg"}:
+        return "audio/ogg"
+    return "application/octet-stream"
+
+
+def get_run_cache_key(run: PredictionRun) -> str:
+    source_key = "none"
+    if run.source_path and run.source_path.exists():
+        stat = run.source_path.stat()
+        source_key = f"{run.source_path}:{stat.st_size}:{stat.st_mtime_ns}"
+    signal_key = f"{run.input_kind}:{run.preds.shape}:{float(np.abs(run.preds).mean()):.6f}:{float(np.abs(run.preds).max()):.6f}"
+    return f"{source_key}:{signal_key}"
+
+
+def build_synced_player_html(run: PredictionRun) -> str:
+    if run.source_path is None or run.input_kind not in {"video", "audio"}:
+        raise ValueError("Synced playback is only available for audio and video runs with a source file.")
+    media_uri = build_data_uri(run.source_path.read_bytes(), guess_media_mime(run.source_path))
+    timeline = collect_timestep_metadata(run)
+    frame_uris = [
+        build_data_uri(
+            render_brain_panel_bytes(run.preds, timestep=item["index"]),
+            "image/jpeg",
+        )
+        for item in timeline
+    ]
+    payload = {
+        "timesteps": [
+            {
+                "index": item["index"],
+                "start": item["start"],
+                "duration": item["duration"],
+                "text": item["text"] or "",
+                "brainUri": frame_uris[idx],
+            }
+            for idx, item in enumerate(timeline)
+        ],
+    }
+    payload_json = json.dumps(payload)
+    media_tag = "video" if run.input_kind == "video" else "audio"
+    return f"""
+    <div style="font-family: ui-sans-serif, system-ui, sans-serif; color: #171717;">
+      <style>
+        .sync-wrap {{
+          display: grid;
+          grid-template-columns: minmax(320px, 1.2fr) minmax(320px, 1fr);
+          gap: 18px;
+          align-items: start;
+        }}
+        .sync-card {{
+          border: 1px solid rgba(23, 23, 23, 0.10);
+          border-radius: 18px;
+          padding: 14px;
+          background: rgba(255, 250, 242, 0.92);
+          box-shadow: 0 8px 20px rgba(23, 23, 23, 0.05);
+        }}
+        .sync-card h4 {{
+          margin: 0 0 10px 0;
+          font-size: 15px;
+        }}
+        .sync-meta {{
+          color: #665f57;
+          font-size: 13px;
+          margin-top: 10px;
+        }}
+        .sync-text {{
+          margin-top: 10px;
+          min-height: 56px;
+          color: #171717;
+          line-height: 1.45;
+          font-size: 14px;
+          white-space: pre-wrap;
+        }}
+        .sync-slider {{
+          width: 100%;
+          margin-top: 10px;
+        }}
+        .sync-brain {{
+          width: 100%;
+          border-radius: 14px;
+          background: white;
+          border: 1px solid rgba(23, 23, 23, 0.08);
+        }}
+      </style>
+      <div class="sync-wrap">
+        <div class="sync-card">
+          <h4>{'Video source' if run.input_kind == 'video' else 'Audio source'}</h4>
+          <{media_tag} id="tribe-media" src="{media_uri}" controls style="width:100%; border-radius: 14px;"></{media_tag}>
+          <input id="tribe-step" class="sync-slider" type="range" min="0" max="{max(len(timeline) - 1, 0)}" value="0" step="1" />
+          <div id="tribe-meta" class="sync-meta"></div>
+          <div id="tribe-text" class="sync-text"></div>
+        </div>
+        <div class="sync-card">
+          <h4>Cerveau predit en temps reel</h4>
+          <img id="tribe-brain" class="sync-brain" alt="TRIBE v2 predicted brain activity" />
+          <div class="sync-meta">La carte change avec le temps de lecture du media. Le pas temporel suit les segments predits du modele.</div>
+        </div>
+      </div>
+      <script>
+        const payload = {payload_json};
+        const steps = payload.timesteps;
+        const player = document.getElementById("tribe-media");
+        const brain = document.getElementById("tribe-brain");
+        const meta = document.getElementById("tribe-meta");
+        const text = document.getElementById("tribe-text");
+        const slider = document.getElementById("tribe-step");
+        let activeIndex = -1;
+
+        function findStepIndex(currentTime) {{
+          for (let i = 0; i < steps.length; i += 1) {{
+            const start = Number(steps[i].start || 0);
+            const end = start + Number(steps[i].duration || 1);
+            if (currentTime >= start && currentTime < end) {{
+              return i;
+            }}
+          }}
+          return currentTime >= Number(steps[steps.length - 1].start || 0) ? steps.length - 1 : 0;
+        }}
+
+        function renderStep(index) {{
+          if (!steps.length || index === activeIndex) return;
+          const step = steps[index];
+          activeIndex = index;
+          brain.src = step.brainUri;
+          slider.value = String(index);
+          const end = Number(step.start) + Number(step.duration);
+          meta.textContent = `Timestep ${{index + 1}} / ${{steps.length}} | ${{Number(step.start).toFixed(2)}}s - ${{end.toFixed(2)}}s`;
+          text.textContent = step.text ? step.text : "Pas de texte aligne pour ce segment.";
+        }}
+
+        function syncToPlayer() {{
+          if (!steps.length) return;
+          renderStep(findStepIndex(player.currentTime || 0));
+          requestAnimationFrame(syncToPlayer);
+        }}
+
+        slider.addEventListener("input", () => {{
+          const index = Number(slider.value || 0);
+          if (!steps.length) return;
+          player.currentTime = Number(steps[index].start || 0);
+          renderStep(index);
+        }});
+
+        player.addEventListener("seeked", () => renderStep(findStepIndex(player.currentTime || 0)));
+        player.addEventListener("timeupdate", () => renderStep(findStepIndex(player.currentTime || 0)));
+        renderStep(0);
+        syncToPlayer();
+      </script>
+    </div>
+    """
 
 
 def input_panel(cache_folder: Path) -> tuple[dict, dict]:
@@ -470,9 +644,28 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         width="stretch",
     )
 
-    tabs = st.tabs(["3D interactif", "Animation MP4", "Figure multi-timesteps", "Table des evenements"])
+    tab_labels = ["3D interactif", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
+    synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
+    if synced_media_available:
+        tab_labels = ["Lecteur synchronise"] + tab_labels
+    tabs = st.tabs(tab_labels)
+    tab_offset = 0
 
-    with tabs[0]:
+    if synced_media_available:
+        with tabs[0]:
+            sync_cache = st.session_state.setdefault("sync_player_html", {})
+            sync_key = get_run_cache_key(run)
+            if st.button("Preparer le lecteur synchronise", width="stretch"):
+                with st.spinner("Preparation du lecteur synchronise..."):
+                    sync_cache[sync_key] = build_synced_player_html(run)
+            sync_html = sync_cache.get(sync_key)
+            if sync_html:
+                components.html(sync_html, height=860, scrolling=False)
+            else:
+                st.caption("Ce lecteur associe le temps de lecture du media a la carte cerebrale predite correspondante.")
+            tab_offset = 1
+
+    with tabs[tab_offset]:
         html_cache = st.session_state.setdefault("interactive_html_by_timestep", {})
         if st.button("Generer la scene 3D", width="stretch"):
             with st.spinner("Generation de la scene 3D..."):
@@ -494,7 +687,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         else:
             st.caption("Generez la scene pour obtenir un cerveau 3D que vous pouvez tourner librement.")
 
-    with tabs[1]:
+    with tabs[tab_offset + 1]:
         export_cols = st.columns(2)
         max_timesteps = export_cols[0].slider(
             "Timesteps a inclure",
@@ -538,14 +731,14 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         else:
             st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
 
-    with tabs[2]:
+    with tabs[tab_offset + 2]:
         if st.button("Generer la mosaique", width="stretch"):
             st.session_state["mosaic_requested"] = True
         if st.session_state.get("mosaic_requested"):
             mosaic = render_prediction_mosaic(run)
             st.pyplot(mosaic, clear_figure=True, width="stretch")
 
-    with tabs[3]:
+    with tabs[tab_offset + 3]:
         st.dataframe(run.events, width="stretch", height=320)
 
 

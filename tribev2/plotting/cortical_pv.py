@@ -167,6 +167,7 @@ class PlotBrainPyvista(BasePlotBrain):
                 Path(tmp_name).unlink(missing_ok=True)
             img = tight_crop(img, w_pad=self.w_pad, h_pad=self.h_pad)
             pl.clear()
+            pl.close()
             ax.axis("off")
             ax.imshow(img, aspect="equal")
 
@@ -284,6 +285,7 @@ class PlotBrainPyvista(BasePlotBrain):
                 Path(tmp_name).unlink(missing_ok=True)
             img = tight_crop(img, w_pad=self.w_pad, h_pad=self.h_pad)
             pl.clear()
+            pl.close()
             ax.axis("off")
             ax.imshow(img, aspect="equal")
 

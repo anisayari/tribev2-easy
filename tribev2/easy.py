@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import io
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from PIL import Image
 import torch
 
 from tribev2.demo_utils import (
@@ -323,22 +325,133 @@ def render_prediction_mosaic(
     show_stimuli: bool = True,
 ) -> plt.Figure:
     """Render a compact multi-timestep figure for the dashboard."""
-    plotter = get_pyvista_plotter(mesh)
     n_timesteps = min(max_timesteps, len(run.preds))
-    allow_stimuli = False
-    if run.segments:
-        first_segment = run.segments[0]
-        allow_stimuli = has_audio(first_segment) or has_video(first_segment)
-    fig = plotter.plot_timesteps(
-        run.preds[:n_timesteps],
-        segments=run.segments[:n_timesteps],
-        show_stimuli=show_stimuli and allow_stimuli,
-        views="left",
-        cmap="fire",
-        norm_percentile=99,
-        vmin=0.5,
+    if n_timesteps < 1:
+        raise ValueError("Cannot render a mosaic for an empty prediction run.")
+    allow_frames = bool(
+        show_stimuli and run.segments and any(has_video(seg) for seg in run.segments[:n_timesteps])
     )
+    n_rows = 2 if allow_frames else 1
+    row_heights = [1.2, 0.9] if allow_frames else [1.0]
+    fig, axes = plt.subplots(
+        n_rows,
+        n_timesteps,
+        figsize=(3.15 * n_timesteps, 2.85 * n_rows),
+        squeeze=False,
+        gridspec_kw={"height_ratios": row_heights},
+    )
+    for idx in range(n_timesteps):
+        brain_img = render_brain_panel_image(
+            run.preds,
+            timestep=idx,
+            mesh=mesh,
+            vmin=0.5,
+        )
+        brain_ax = axes[0, idx]
+        brain_ax.imshow(brain_img)
+        brain_ax.axis("off")
+        brain_ax.set_title(f"t={idx}s", fontsize=10, pad=6)
+
+        if allow_frames:
+            stim_ax = axes[1, idx]
+            stim_ax.axis("off")
+            clip = get_clip(run.segments[idx]) if idx < len(run.segments) else None
+            if clip is not None:
+                try:
+                    sample_time = min(max(clip.duration / 2, 0), max(clip.duration - 1e-3, 0))
+                    stim_ax.imshow(clip.get_frame(sample_time))
+                finally:
+                    clip.close()
+            text = get_segment_text(run.segments[idx]) if idx < len(run.segments) else None
+            if text:
+                trimmed = text.strip()
+                if len(trimmed) > 64:
+                    trimmed = trimmed[:61] + "..."
+                stim_ax.text(
+                    0.5,
+                    -0.08,
+                    trimmed,
+                    ha="center",
+                    va="top",
+                    transform=stim_ax.transAxes,
+                    fontsize=8,
+                    wrap=True,
+                )
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.93, bottom=0.07, wspace=0.04, hspace=0.18)
     return fig
+
+
+def render_brain_panel_image(
+    preds: np.ndarray,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    views: tuple[str, ...] = ("left", "right", "dorsal"),
+    cmap: str = "fire",
+    norm_percentile: int = 99,
+    vmin: float | None = 0.5,
+) -> np.ndarray:
+    """Render one timestep as a compact RGB image for mosaics and synced playback."""
+    if timestep < 0 or timestep >= len(preds):
+        raise IndexError(f"Invalid timestep {timestep} for predictions of length {len(preds)}.")
+    plotter = get_pyvista_plotter(mesh)
+    fig, axes = plt.subplots(
+        1,
+        len(views),
+        figsize=(2.2 * len(views), 2.1),
+        squeeze=False,
+    )
+    flat_axes = list(axes.flatten())
+    plotter.plot_surf(
+        preds[timestep],
+        axes=flat_axes,
+        views=list(views),
+        cmap=cmap,
+        norm_percentile=norm_percentile,
+        vmin=vmin,
+    )
+    for ax in flat_axes:
+        ax.axis("off")
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.99, bottom=0.01, wspace=0.01, hspace=0.01)
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight", pad_inches=0.0)
+    plt.close(fig)
+    buffer.seek(0)
+    return np.array(Image.open(buffer).convert("RGB"))
+
+
+def render_brain_panel_bytes(
+    preds: np.ndarray,
+    *,
+    timestep: int,
+    mesh: str = "fsaverage5",
+    views: tuple[str, ...] = ("left", "right", "dorsal"),
+    cmap: str = "fire",
+    norm_percentile: int = 99,
+    vmin: float | None = 0.5,
+    image_format: str = "JPEG",
+    quality: int = 84,
+) -> bytes:
+    """Render one timestep to bytes for browser playback widgets."""
+    image = Image.fromarray(
+        render_brain_panel_image(
+            preds,
+            timestep=timestep,
+            mesh=mesh,
+            views=views,
+            cmap=cmap,
+            norm_percentile=norm_percentile,
+            vmin=vmin,
+        )
+    )
+    buffer = io.BytesIO()
+    save_kwargs: dict[str, tp.Any] = {}
+    if image_format.upper() == "JPEG":
+        image = image.convert("RGB")
+        save_kwargs.update({"quality": quality, "optimize": True})
+    image.save(buffer, format=image_format.upper(), **save_kwargs)
+    return buffer.getvalue()
 
 
 def _get_surface_render_data(
@@ -530,6 +643,43 @@ def describe_timestep(
         "peak_abs": peak_abs,
         "summary": summary,
     }
+
+
+def collect_timestep_metadata(run: PredictionRun) -> list[dict[str, tp.Any]]:
+    """Collect lightweight timing/text metadata for synced playback."""
+    out: list[dict[str, tp.Any]] = []
+    for idx in range(len(run.preds)):
+        segment = run.segments[idx] if idx < len(run.segments) else None
+        start = getattr(segment, "start", None)
+        duration = getattr(segment, "duration", None)
+        if start is None:
+            start = float(idx)
+        if duration is None:
+            if idx + 1 < len(run.segments):
+                next_start = getattr(run.segments[idx + 1], "start", None)
+                duration = (float(next_start) - float(start)) if next_start is not None else 1.0
+            else:
+                duration = 1.0
+        duration = max(float(duration), 1e-3)
+        out.append(
+            {
+                "index": idx,
+                "start": float(start),
+                "duration": duration,
+                "text": get_segment_text(segment) if segment is not None else "",
+            }
+        )
+    return out
+
+
+def get_segment_text(segment: tp.Any) -> str:
+    """Best-effort text extraction that tolerates lightweight fake segments in tests."""
+    if segment is None:
+        return ""
+    try:
+        return get_text(segment)
+    except Exception:
+        return ""
 
 
 def build_explainability_report(

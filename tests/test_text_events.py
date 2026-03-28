@@ -11,6 +11,7 @@ from tribev2.easy import (
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
+    collect_timestep_metadata,
     describe_timestep,
     prepare_events,
     resolve_text_model_name,
@@ -191,3 +192,25 @@ def test_build_image_comparison_guide_mentions_both_images():
     text = " ".join(guide["bullets"])
     assert "image 1" in text
     assert "image 2" in text
+
+
+def test_collect_timestep_metadata_uses_segment_timing():
+    class FakeSegment:
+        def __init__(self, start, duration):
+            self.start = start
+            self.duration = duration
+            self.events = easy_module.pd.DataFrame()
+
+    run = PredictionRun(
+        events=build_text_events_from_text("placeholder"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[FakeSegment(0.0, 0.8), FakeSegment(0.8, 1.2)],
+        input_kind="audio",
+    )
+
+    timeline = collect_timestep_metadata(run)
+
+    assert timeline[0]["start"] == 0.0
+    assert timeline[0]["duration"] == 0.8
+    assert timeline[1]["start"] == 0.8
+    assert timeline[1]["duration"] == 1.2
