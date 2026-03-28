@@ -10,7 +10,13 @@ from tribev2.easy import (
     ImageComparisonRun,
     MultiModalRun,
     PredictionRun,
+    build_emotion_hypothesis_frame,
+    build_run_roi_frame,
+    build_run_zone_frame,
+    build_selected_timestep_roi_frame,
+    build_timestep_zone_frame,
     collect_timestep_metadata,
+    collect_run_text,
     render_run_panel_bytes,
     summarize_predictions,
 )
@@ -21,7 +27,7 @@ DEFAULT_OPENAI_CHAT_MODEL = "gpt-5.4"
 LOGGER = logging.getLogger("tribev2.openai_chat")
 
 COMMON_UNCERTAINTIES = [
-    "l'ordre exact des images si l'affichage ne suit pas strictement t0→tN ou si seules des frames cles ont ete jointes",
+    "l'ordre exact des images si l'affichage ne suit pas strictement t0->tN ou si seules des frames cles ont ete jointes",
     "la comparabilite stricte des intensites visuelles sans colorbar commune ou sans confirmation d'une normalisation identique",
     "l'attribution anatomique fine a une region precise plutot qu'a un grand systeme cortical",
     "toute interpretation neuroscientifique forte, car il s'agit de predictions TRIBE v2 et non de mesures fMRI reelles",
@@ -92,7 +98,8 @@ def _build_interpretation_contract(run: PredictionRun | ImageComparisonRun) -> d
     return {
         "mission": [
             "Expliquer ce que montre la carte d'activite corticale predite.",
-            "Dire a quoi le pattern est typiquement associe: vision, audition, langage, attention, saillance, memoire de travail, cognition sociale ou charge affective plausible.",
+            "Dire a quoi le pattern est typiquement associe: vision, audition, langage, attention, saillance, controle frontal, cognition sociale ou charge affective plausible.",
+            "Utiliser en priorite les tableaux HCP par zone et la radar map des hypotheses affectives quand ils sont fournis.",
             "Si l'utilisateur le demande, proposer une lecture prudente de valence ou d'emotions plausibles: positive, negative, mixte, peur, desir, joie, tristesse, colere, calme, tension, menace, surprise.",
             "Toujours distinguer observation, hypothese et incertitude.",
         ],
@@ -100,13 +107,15 @@ def _build_interpretation_contract(run: PredictionRun | ImageComparisonRun) -> d
             "1. Ce qu'on voit",
             "2. A quoi c'est typique",
             "3. Emotion ou ressenti plausible",
-            "4. Indices du stimulus et des donnees qui soutiennent cette lecture",
+            "4. Zones corticales et indices du stimulus qui soutiennent cette lecture",
             "5. Ce qui reste incertain",
         ],
         "regles": [
             "Commence par la modalite et rappelle ce que represente un timestep dans ce run.",
             "Ne parle jamais comme si TRIBE v2 mesurait directement l'activite cerebrale: ce sont des predictions du modele.",
             "Ne transforme pas une emotion plausible en certitude.",
+            "La sortie visible ici est une surface corticale fsaverage5; ne pretends pas observer directement l'amygdale, l'insula profonde ou d'autres structures sous-corticales si elles ne sont pas explicitement fournies.",
+            "La radar map emotionnelle est une heuristique de synthese, pas un decodeur clinique d'emotions.",
             comparison_hint,
             "Reponds en francais sauf si l'utilisateur demande une autre langue.",
         ],
@@ -117,10 +126,12 @@ def _build_interpretation_contract(run: PredictionRun | ImageComparisonRun) -> d
 def build_chat_system_prompt(run: PredictionRun | ImageComparisonRun) -> str:
     sections = [
         "Tu es l'assistant d'analyse du dashboard TRIBE v2 Easy.",
-        "Ta tache est d'expliquer les sorties du modele a partir des donnees numeriques et des images de timesteps qui te sont fournies.",
+        "Ta tache est d'expliquer les sorties du modele a partir des donnees numeriques, des tableaux par zone, de la radar map d'hypotheses affectives et des images de timesteps qui te sont fournies.",
         "",
         "Comment fonctionne l'experience TRIBE v2 dans ce dashboard:",
         *[f"- {item}" for item in _build_pipeline_summary()],
+        "- Les tableaux par zone agregent la surface corticale fsaverage5 par ROIs HCP-MMP. Ils portent sur le cortex uniquement.",
+        "- La radar map emotionnelle combine des indices du stimulus, les zones corticales dominantes et la modalite. Ce n'est pas une lecture directe d'un etat mental.",
         "",
         "Comment lire la modalite courante:",
         *[f"- {item}" for item in _build_modality_notes(run)],
@@ -140,6 +151,7 @@ def build_chat_system_prompt(run: PredictionRun | ImageComparisonRun) -> str:
         "Interdits:",
         "- pas de diagnostic medical",
         "- pas de lecture directe des intentions ou de l'etat mental",
+        "- pas de claim de structures sous-corticales non visibles dans les donnees corticales",
         "- pas d'affirmation anatomique trop fine sans preuve",
         "- pas d'interpretation neuroscientifique forte presentee comme certaine",
     ]
@@ -212,6 +224,17 @@ def _prediction_run_context_images(
     selected = _select_key_timestep_indices(frame, max_images=max_images)
     rows_for_prompt = frame.sort_values("mean_abs", ascending=False).head(8)
     modality_notes = _build_modality_notes(run)
+    zone_payload = {
+        "run_zone_summary": build_run_zone_frame(run).to_dict(orient="records"),
+        "run_top_rois": build_run_roi_frame(run, top_k=24).to_dict(orient="records"),
+        "zone_timeseries": build_timestep_zone_frame(run).to_dict(orient="records"),
+        "selected_timestep_rois": build_selected_timestep_roi_frame(
+            run,
+            indices=selected,
+            top_k=10,
+        ).to_dict(orient="records"),
+        "emotion_hypotheses": build_emotion_hypothesis_frame(run).to_dict(orient="records"),
+    }
     payload = {
         "run_label": run_label,
         "input_kind": run.input_kind,
@@ -219,13 +242,20 @@ def _prediction_run_context_images(
         "n_vertices": int(run.preds.shape[1]),
         "source_path": str(run.source_path) if run.source_path is not None else None,
         "raw_text_excerpt": _truncate_text(run.raw_text),
+        "full_text_excerpt": _truncate_text(collect_run_text(run), limit=3200),
         "tribev2_pipeline_summary": _build_pipeline_summary(),
         "modality_notes": modality_notes,
+        "cortical_zone_notes": [
+            "Les tableaux HCP par zone et ROI proviennent du cortex fsaverage5 et ne couvrent pas les structures sous-corticales.",
+            "Les valeurs par zone utilisent une amplitude absolue moyenne agregee, utile pour comparer des patrons relatifs dans le run.",
+            "Les hypotheses emotionnelles restent prudentes et doivent etre lues comme des hypotheses de stimulus, pas comme une certitude sur l'etat interne d'un sujet.",
+        ],
         "interpretation_contract": _build_interpretation_contract(run),
         "selected_timestep_image_policy": (
             "Les images jointes sont des timesteps cles choisis automatiquement a partir du debut, du milieu, de la fin et des pics de mean_abs."
         ),
         "timestep_rows": rows_for_prompt.to_dict(orient="records"),
+        "zone_payload": zone_payload,
     }
     image_parts: list[dict[str, str]] = []
     labels: list[str] = []

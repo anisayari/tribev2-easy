@@ -14,6 +14,7 @@ import typing as tp
 import uuid
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 import streamlit as st
 import streamlit.components.v1 as components
@@ -36,7 +37,11 @@ from tribev2.easy import (
     ImageComparisonRun,
     MultiModalRun,
     PredictionRun,
+    build_emotion_hypothesis_frame,
     build_browser_media_proxy,
+    build_run_roi_frame,
+    build_run_zone_frame,
+    build_timestep_zone_frame,
     collect_timestep_metadata,
     export_prediction_video,
     load_model,
@@ -650,6 +655,137 @@ def render_media_preview(
 
 def render_raw_timestep_table(run: PredictionRun, *, height: int = 430) -> None:
     st.dataframe(build_raw_timestep_frame(run), width="stretch", height=height)
+
+
+def get_cached_zone_bundle(run: PredictionRun) -> dict[str, pd.DataFrame]:
+    cache = st.session_state.setdefault("zone_analysis_bundle", {})
+    cache_key = get_run_cache_key(run)
+    if cache_key not in cache:
+        cache[cache_key] = {
+            "emotion": build_emotion_hypothesis_frame(run),
+            "run_zone": build_run_zone_frame(run),
+            "run_roi": build_run_roi_frame(run),
+            "zone_timeseries": build_timestep_zone_frame(run),
+        }
+    return tp.cast(dict[str, pd.DataFrame], cache[cache_key])
+
+
+def render_emotion_radar(frame: pd.DataFrame, *, chart_key: str, height: int = 340) -> None:
+    import plotly.graph_objects as go
+
+    if frame.empty:
+        st.caption("Radar indisponible.")
+        return
+    theta = frame["label"].tolist()
+    radius = frame["score_pct"].astype(float).tolist()
+    theta.append(theta[0])
+    radius.append(radius[0])
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=radius,
+            theta=theta,
+            fill="toself",
+            line={"color": "#ea580c", "width": 3},
+            fillcolor="rgba(234, 88, 12, 0.18)",
+            marker={"size": 6, "color": "#c2410c"},
+            hovertemplate="%{theta}: %{r:.1f}<extra></extra>",
+            name="Hypothese",
+        )
+    )
+    fig.update_layout(
+        margin={"l": 24, "r": 24, "t": 8, "b": 8},
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        polar={
+            "bgcolor": "rgba(0,0,0,0)",
+            "radialaxis": {
+                "range": [0, 100],
+                "tickvals": [25, 50, 75, 100],
+                "tickfont": {"size": 10, "color": "#71717a"},
+                "gridcolor": "rgba(113, 113, 122, 0.18)",
+                "linecolor": "rgba(113, 113, 122, 0.18)",
+            },
+            "angularaxis": {
+                "tickfont": {"size": 12, "color": "#111827"},
+                "gridcolor": "rgba(113, 113, 122, 0.12)",
+                "linecolor": "rgba(113, 113, 122, 0.12)",
+            },
+        },
+        showlegend=False,
+    )
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        theme=None,
+        key=chart_key,
+        config={"displayModeBar": False},
+    )
+
+
+def render_zone_analysis_panel(run: PredictionRun, *, panel_key: str) -> None:
+    bundle = get_cached_zone_bundle(run)
+    emotion_frame = bundle["emotion"]
+    run_zone_frame = bundle["run_zone"]
+    run_roi_frame = bundle["run_roi"]
+    zone_timeseries_frame = bundle["zone_timeseries"]
+    top_zone_frame = run_zone_frame.head(6).copy()
+
+    st.caption(
+        "Atlas HCP-MMP sur fsaverage5. Les zones visibles ici sont corticales. "
+        "Le radar emotionnel est une hypothese de stimulus, pas un decodeur clinique."
+    )
+
+    overview_left, overview_right = st.columns([1.0, 1.05], gap="large")
+    with overview_left:
+        render_emotion_radar(emotion_frame, chart_key=f"emotion_radar_{panel_key}")
+        st.dataframe(
+            emotion_frame[["label", "score_pct", "top_zone_drivers", "lexical_hits"]],
+            width="stretch",
+            height=220,
+        )
+    with overview_right:
+        if not top_zone_frame.empty:
+            st.bar_chart(
+                top_zone_frame.set_index("zone")["share"],
+                height=320,
+                width="stretch",
+            )
+        st.dataframe(
+            top_zone_frame[["zone", "share", "roi_count", "systems"]],
+            width="stretch",
+            height=220,
+        )
+
+    zone_tabs = st.tabs(["Zones", "ROI HCP", "Timeline zones"])
+    with zone_tabs[0]:
+        st.dataframe(
+            run_zone_frame[["zone", "share", "value", "roi_count", "systems"]],
+            width="stretch",
+            height=320,
+        )
+    with zone_tabs[1]:
+        st.dataframe(
+            run_roi_frame[["roi", "zone", "share", "value", "signed_value", "systems"]],
+            width="stretch",
+            height=360,
+        )
+    with zone_tabs[2]:
+        if not zone_timeseries_frame.empty:
+            pivot = zone_timeseries_frame.pivot(
+                index="timestep",
+                columns="zone",
+                values="share",
+            ).fillna(0.0)
+            pivot_values = pivot.to_numpy(dtype=float)
+            if pivot.shape[0] > 0 and np.isfinite(pivot_values).all():
+                st.line_chart(pivot, height=260, width="stretch")
+        st.dataframe(
+            zone_timeseries_frame[["timestep", "start_s", "duration_s", "zone", "share", "value", "systems"]],
+            width="stretch",
+            height=320,
+        )
 
 
 def get_cached_openai_context_bundle(
@@ -1554,7 +1690,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         with st.container(border=True):
             section_head("Vues", kicker="Exports")
             include_mp4 = not isinstance(run, MultiModalRun)
-            tab_labels = ["3D", "MP4", "Mosaique", "Evenements"]
+            tab_labels = ["3D", "MP4", "Mosaique", "Zones", "Evenements"]
             synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
             if synced_media_available:
                 tab_labels = ["Sync"] + tab_labels
@@ -1677,20 +1813,26 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                     st.pyplot(mosaic_cache[mosaic_key], clear_figure=False, width="stretch")
 
             with tabs[tab_offset + 3]:
+                render_zone_analysis_panel(run, panel_key=f"{run_key}_workspace")
+
+            with tabs[tab_offset + 4]:
                 st.dataframe(run.events, width="stretch", height=320)
 
     with inspect_col:
         with st.container(border=True):
             section_head("Inspecteur", kicker="Source")
-            preview_tab, data_tab = st.tabs(["Aperçu", "Timesteps"])
+            preview_tab, data_tab, zone_tab = st.tabs(["Aperçu", "Timesteps", "Zones"])
             with preview_tab:
                 render_input_preview(run, cache_folder=cache_folder)
             with data_tab:
                 render_raw_timestep_table(run, height=420)
+            with zone_tab:
+                render_zone_analysis_panel(run, panel_key=f"{run_key}_inspect")
 
         with st.container(border=True):
             section_head("Fichiers", kicker="DL")
-            export_cols = st.columns(3)
+            zone_bundle = get_cached_zone_bundle(run)
+            export_cols = st.columns(5)
             export_cols[0].download_button(
                 ".npy",
                 data=build_npy_download(run.preds),
@@ -1709,6 +1851,20 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                 "résumé.csv",
                 data=summary.to_csv(index=False).encode("utf-8"),
                 file_name="tribev2_summary.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+            export_cols[3].download_button(
+                "zones.csv",
+                data=zone_bundle["run_zone"].to_csv(index=False).encode("utf-8"),
+                file_name="tribev2_zone_summary.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+            export_cols[4].download_button(
+                "roi.csv",
+                data=zone_bundle["run_roi"].to_csv(index=False).encode("utf-8"),
+                file_name="tribev2_hcp_roi_summary.csv",
                 mime="text/csv",
                 width="stretch",
             )
@@ -1757,6 +1913,8 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
                 )
                 with st.expander("Timesteps", expanded=False):
                     render_raw_timestep_table(item, height=260)
+                with st.expander("Zones / emotions", expanded=False):
+                    render_zone_analysis_panel(item, panel_key=f"comparison_{idx}_{get_run_cache_key(item)}")
                 st.download_button(
                     f".npy · {idx}",
                     data=build_npy_download(item.preds),

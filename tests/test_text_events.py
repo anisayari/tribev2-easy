@@ -12,6 +12,7 @@ from tribev2 import dashboard_app as dashboard_app_module
 from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
 from tribev2 import openai_chat as openai_chat_module
+from tribev2 import utils as utils_module
 from tribev2.eventstransforms import ExtractWordsFromAudio
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
@@ -22,8 +23,12 @@ from tribev2.easy import (
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
+    build_emotion_hypothesis_frame,
     build_result_interpretation,
+    build_run_roi_frame,
+    build_run_zone_frame,
     build_timestep_report_frame,
+    build_timestep_zone_frame,
     collect_timestep_metadata,
     describe_timestep,
     infer_affective_cues,
@@ -39,6 +44,27 @@ from tribev2.openai_chat import (
     build_raw_timestep_frame,
 )
 from tribev2.runtime import apply_warning_filters, configure_file_logging
+
+
+def _patch_synthetic_hcp(monkeypatch):
+    label_map = {
+        "V1": np.array([0, 1]),
+        "A1": np.array([2, 3]),
+        "TPOJ1": np.array([4, 5]),
+        "10d": np.array([6, 7]),
+    }
+
+    def fake_labels(*args, **kwargs):
+        return label_map
+
+    def fake_summarize(data, hemi="both", mesh="fsaverage5"):
+        signal = np.asarray(data, dtype=float)
+        return np.array([signal[vertices].mean() for vertices in label_map.values()], dtype=float)
+
+    monkeypatch.setattr(easy_module, "get_hcp_labels", fake_labels)
+    monkeypatch.setattr(easy_module, "summarize_by_roi", fake_summarize)
+    monkeypatch.setattr(utils_module, "get_hcp_labels", fake_labels)
+    monkeypatch.setattr(utils_module, "summarize_by_roi", fake_summarize)
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -107,6 +133,67 @@ def test_multimodal_run_key_and_prompt_include_overlay_context():
     assert key.startswith("multimodal:")
     assert "rouge pour le visuel" in prompt
     assert report.iloc[0]["zone"] == "Fusion multimodale"
+
+
+def test_get_topk_rois_handles_dict_keys(monkeypatch):
+    _patch_synthetic_hcp(monkeypatch)
+    data = np.array([8.0, 8.0, 2.0, 2.0, 5.0, 5.0, 1.0, 1.0])
+
+    rois = utils_module.get_topk_rois(data, hemi="both", mesh="fsaverage5", k=2)
+
+    assert list(rois) == ["V1", "TPOJ1"]
+
+
+def test_zone_and_emotion_frames_are_built_from_hcp_rois(monkeypatch):
+    _patch_synthetic_hcp(monkeypatch)
+    events = build_text_events_from_text("I am scared but hopeful.", seconds_per_word=1.0)
+    preds = np.zeros((2, 8), dtype=float)
+    preds[0, :2] = 4.0
+    preds[0, 4:6] = 3.0
+    preds[0, 6:8] = 2.0
+    preds[1, 2:4] = 3.0
+    run = PredictionRun(
+        events=events,
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="I am scared but hopeful.",
+    )
+
+    zone_frame = build_run_zone_frame(run)
+    roi_frame = build_run_roi_frame(run)
+    timeseries_frame = build_timestep_zone_frame(run)
+    emotion_frame = build_emotion_hypothesis_frame(run)
+
+    assert {"zone", "share", "roi_count"}.issubset(zone_frame.columns)
+    assert {"roi", "zone", "value"}.issubset(roi_frame.columns)
+    assert {"timestep", "zone", "share"}.issubset(timeseries_frame.columns)
+    assert {"label", "score_pct", "top_zone_drivers"}.issubset(emotion_frame.columns)
+    assert "Peur" in emotion_frame["label"].tolist()
+
+
+def test_openai_context_bundle_includes_zone_payload(monkeypatch):
+    _patch_synthetic_hcp(monkeypatch)
+    monkeypatch.setattr(openai_chat_module, "render_run_panel_bytes", lambda *args, **kwargs: b"fake-jpeg")
+    events = build_text_events_from_text("A fearful social scene.", seconds_per_word=1.0)
+    preds = np.zeros((2, 8), dtype=float)
+    preds[0, :2] = 2.0
+    preds[0, 4:6] = 3.0
+    run = PredictionRun(
+        events=events,
+        preds=preds,
+        segments=[],
+        input_kind="text",
+        raw_text="A fearful social scene.",
+    )
+
+    prompt = build_chat_system_prompt(run)
+    context_text, _, _ = build_openai_context_bundle(run, max_images=1)
+
+    assert "tableaux HCP par zone" in prompt
+    assert "radar map" in prompt
+    assert '"zone_payload"' in context_text
+    assert '"emotion_hypotheses"' in context_text
 
 
 def test_resolve_text_model_name_defaults_to_preferred_repo():

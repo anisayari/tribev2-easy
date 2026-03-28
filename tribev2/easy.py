@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict, defaultdict
 from contextlib import redirect_stderr
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -44,6 +45,7 @@ from tribev2.plotting.utils import (
     has_video,
     robust_normalize,
 )
+from tribev2.utils import get_hcp_labels, summarize_by_roi
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,234 @@ VALENCE_CUE_LEXICON: dict[str, set[str]] = {
         "calm", "quiet", "peace", "soft", "slow", "rest", "gentle",
         "calme", "paisible", "doux", "douce", "lent", "lente", "repos",
     },
+}
+
+
+EMOTION_AXES: tuple[str, ...] = ("joy", "fear", "sadness", "anger", "desire", "calm")
+EMOTION_LABELS: dict[str, str] = {
+    "joy": "Joie",
+    "fear": "Peur",
+    "sadness": "Tristesse",
+    "anger": "Colere",
+    "desire": "Desir",
+    "calm": "Calme",
+}
+ZONE_FAMILY_META: OrderedDict[str, dict[str, tp.Any]] = OrderedDict(
+    [
+        (
+            "visual_occipital",
+            {
+                "label": "Visuel occipital",
+                "systems": ["vision precoce", "scene visuelle", "formes et contraste"],
+                "keywords": (
+                    "V1",
+                    "V2",
+                    "V3",
+                    "V4",
+                    "V6",
+                    "V7",
+                    "V8",
+                    "LO",
+                    "MT",
+                    "MST",
+                    "FST",
+                    "VVC",
+                    "VMV",
+                    "FFC",
+                    "PIT",
+                    "PHA",
+                    "PHT",
+                    "PH",
+                    "POS",
+                    "PCV",
+                    "V3A",
+                    "V3B",
+                    "V3CD",
+                    "V4t",
+                    "V6A",
+                ),
+            },
+        ),
+        (
+            "auditory_temporal",
+            {
+                "label": "Auditif / temporal",
+                "systems": ["audition", "parole", "indices prosodiques", "semantique auditive"],
+                "keywords": (
+                    "A1",
+                    "A4",
+                    "A5",
+                    "LBelt",
+                    "MBelt",
+                    "PBelt",
+                    "RI",
+                    "H",
+                    "STG",
+                    "STS",
+                    "STV",
+                    "TA2",
+                    "TE1",
+                    "TE2",
+                    "TG",
+                    "TPOJ",
+                    "Pir",
+                    "52",
+                ),
+            },
+        ),
+        (
+            "tpj_social",
+            {
+                "label": "Association TPJ / social",
+                "systems": ["cognition sociale", "contexte narratif", "mentalisation plausible"],
+                "keywords": (
+                    "TPOJ",
+                    "PGi",
+                    "PGp",
+                    "PGs",
+                    "PSL",
+                    "PF",
+                    "PFcm",
+                    "PFm",
+                    "PFop",
+                    "PFt",
+                    "STS",
+                    "TE1m",
+                    "TE1p",
+                    "TGd",
+                    "TGv",
+                    "ProS",
+                    "PreS",
+                    "RSC",
+                ),
+            },
+        ),
+        (
+            "dorsal_attention_parietal",
+            {
+                "label": "Parietal dorsal / attention",
+                "systems": ["attention visuo-spatiale", "salience", "orientation"],
+                "keywords": (
+                    "IPS",
+                    "IP0",
+                    "IP1",
+                    "IP2",
+                    "LIP",
+                    "MIP",
+                    "VIP",
+                    "AIP",
+                    "7A",
+                    "7P",
+                    "7m",
+                    "PEF",
+                    "PCV",
+                    "V6A",
+                    "V7",
+                ),
+            },
+        ),
+        (
+            "frontoparietal_control",
+            {
+                "label": "Frontal / controle",
+                "systems": ["controle attentionnel", "selection", "maintien du contexte"],
+                "keywords": (
+                    "FEF",
+                    "IFJ",
+                    "IFS",
+                    "i6-8",
+                    "s6-8",
+                    "55b",
+                    "6",
+                    "8",
+                    "9",
+                    "46",
+                    "SFL",
+                    "SCEF",
+                    "p9-46v",
+                    "a9-46v",
+                    "9-46d",
+                ),
+            },
+        ),
+        (
+            "medial_value_cingulate",
+            {
+                "label": "Medial / cingulaire / valeur",
+                "systems": ["evaluation", "monitoring", "contexte affectif plausible"],
+                "keywords": (
+                    "10",
+                    "11",
+                    "13",
+                    "OFC",
+                    "pOFC",
+                    "a24",
+                    "p24",
+                    "24",
+                    "a32",
+                    "p32",
+                    "d32",
+                    "s32",
+                    "25",
+                    "33pr",
+                    "23",
+                    "31",
+                    "v23ab",
+                    "d23ab",
+                ),
+            },
+        ),
+        (
+            "sensorimotor_opercular",
+            {
+                "label": "Sensorimoteur / operculaire",
+                "systems": ["somatomoteur", "interoception corticale plausible", "reponse operculaire"],
+                "keywords": (
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5L",
+                    "5m",
+                    "5mv",
+                    "MI",
+                    "OP",
+                    "FOP",
+                    "AVI",
+                    "AAIC",
+                    "PI",
+                    "PoI",
+                    "Ig",
+                    "43",
+                ),
+            },
+        ),
+        (
+            "association_other",
+            {
+                "label": "Association diffuse",
+                "systems": ["association heterogene", "integration distribuee"],
+                "keywords": (),
+            },
+        ),
+    ]
+)
+ZONE_EMOTION_WEIGHTS: dict[str, dict[str, float]] = {
+    "visual_occipital": {"joy": 0.18, "fear": 0.22, "sadness": 0.10, "anger": 0.10, "desire": 0.24, "calm": 0.12},
+    "auditory_temporal": {"joy": 0.18, "fear": 0.24, "sadness": 0.22, "anger": 0.22, "desire": 0.10, "calm": 0.18},
+    "tpj_social": {"joy": 0.20, "fear": 0.22, "sadness": 0.28, "anger": 0.14, "desire": 0.18, "calm": 0.10},
+    "dorsal_attention_parietal": {"joy": 0.08, "fear": 0.34, "sadness": 0.12, "anger": 0.22, "desire": 0.16, "calm": 0.05},
+    "frontoparietal_control": {"joy": 0.08, "fear": 0.18, "sadness": 0.18, "anger": 0.22, "desire": 0.12, "calm": 0.18},
+    "medial_value_cingulate": {"joy": 0.22, "fear": 0.18, "sadness": 0.30, "anger": 0.16, "desire": 0.28, "calm": 0.20},
+    "sensorimotor_opercular": {"joy": 0.08, "fear": 0.34, "sadness": 0.20, "anger": 0.30, "desire": 0.10, "calm": 0.06},
+    "association_other": {"joy": 0.14, "fear": 0.16, "sadness": 0.16, "anger": 0.14, "desire": 0.16, "calm": 0.14},
+}
+EMOTION_MODALITY_PRIORS: dict[str, dict[str, float]] = {
+    "video": {"joy": 0.12, "fear": 0.16, "sadness": 0.10, "anger": 0.12, "desire": 0.14, "calm": 0.08},
+    "image": {"joy": 0.10, "fear": 0.14, "sadness": 0.08, "anger": 0.10, "desire": 0.16, "calm": 0.06},
+    "audio": {"joy": 0.12, "fear": 0.16, "sadness": 0.14, "anger": 0.16, "desire": 0.08, "calm": 0.14},
+    "text": {"joy": 0.10, "fear": 0.10, "sadness": 0.10, "anger": 0.10, "desire": 0.10, "calm": 0.10},
+    "multimodal": {"joy": 0.12, "fear": 0.14, "sadness": 0.12, "anger": 0.12, "desire": 0.12, "calm": 0.10},
 }
 
 
@@ -588,6 +818,8 @@ def infer_affective_cues(text: str | None) -> dict[str, tp.Any]:
             "valence": "indeterminee",
             "emotions": [],
             "evidence": [],
+            "scores": {name: 0 for name in VALENCE_CUE_LEXICON},
+            "hits_by_emotion": {name: [] for name in VALENCE_CUE_LEXICON},
             "summary": "Pas assez de contenu textuel pour estimer une valence ou une emotion.",
         }
 
@@ -598,11 +830,17 @@ def infer_affective_cues(text: str | None) -> dict[str, tp.Any]:
             "valence": "indeterminee",
             "emotions": [],
             "evidence": [],
+            "scores": {name: 0 for name in VALENCE_CUE_LEXICON},
+            "hits_by_emotion": {name: [] for name in VALENCE_CUE_LEXICON},
             "summary": "Le texte du segment ne contient pas assez d'indices lexicaux exploitables.",
         }
 
     scores = {
         name: sum(token in lexicon for token in tokens)
+        for name, lexicon in VALENCE_CUE_LEXICON.items()
+    }
+    hits_by_emotion = {
+        name: sorted({token for token in tokens if token in lexicon})
         for name, lexicon in VALENCE_CUE_LEXICON.items()
     }
     evidence = sorted(
@@ -644,7 +882,284 @@ def infer_affective_cues(text: str | None) -> dict[str, tp.Any]:
         "valence": valence,
         "emotions": emotions,
         "evidence": evidence[:8],
+        "scores": scores,
+        "hits_by_emotion": hits_by_emotion,
         "summary": summary,
+    }
+
+
+def collect_run_text(run: PredictionRun) -> str:
+    pieces: list[str] = []
+    if run.raw_text:
+        pieces.append(str(run.raw_text).strip())
+    for row in collect_timestep_metadata(run):
+        text = str(row.get("text", "") or "").strip()
+        if text:
+            pieces.append(text)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for piece in pieces:
+        if piece not in seen:
+            deduped.append(piece)
+            seen.add(piece)
+    return "\n".join(deduped)
+
+
+def _roi_matches_keyword(roi: str, keyword: str) -> bool:
+    if not keyword:
+        return False
+    if roi == keyword:
+        return True
+    if not roi.startswith(keyword):
+        return False
+    if keyword[-1].isdigit():
+        if len(roi) == len(keyword):
+            return True
+        return not roi[len(keyword)].isdigit()
+    return True
+
+
+def classify_roi_family(roi: str) -> str:
+    for key, meta in ZONE_FAMILY_META.items():
+        for keyword in tp.cast(tuple[str, ...], meta["keywords"]):
+            if _roi_matches_keyword(roi, keyword):
+                return key
+    return "association_other"
+
+
+def build_roi_activity_frame(
+    signal: np.ndarray,
+    *,
+    mesh: str = "fsaverage5",
+    hemi: str = "both",
+    top_k: int | None = None,
+) -> pd.DataFrame:
+    signal = np.asarray(signal, dtype=float)
+    abs_values = summarize_by_roi(np.abs(signal), hemi=hemi, mesh=mesh)
+    signed_values = summarize_by_roi(signal, hemi=hemi, mesh=mesh)
+    labels = list(get_hcp_labels(mesh=mesh, combine=False, hemi=hemi).keys())
+    rows: list[dict[str, tp.Any]] = []
+    for roi, value, signed_value in zip(labels, abs_values, signed_values):
+        zone_key = classify_roi_family(roi)
+        zone_meta = ZONE_FAMILY_META[zone_key]
+        rows.append(
+            {
+                "roi": roi,
+                "zone_key": zone_key,
+                "zone": zone_meta["label"],
+                "value": float(value),
+                "signed_value": float(signed_value),
+                "systems": ", ".join(tp.cast(list[str], zone_meta["systems"])),
+            }
+        )
+    frame = pd.DataFrame(rows).sort_values("value", ascending=False, ignore_index=True)
+    total = float(frame["value"].sum()) if not frame.empty else 0.0
+    frame["share"] = frame["value"] / max(total, 1e-8)
+    frame["rank"] = np.arange(1, len(frame) + 1)
+    if top_k is not None:
+        return frame.head(int(top_k)).reset_index(drop=True)
+    return frame
+
+
+def build_zone_activity_frame(
+    signal: np.ndarray,
+    *,
+    mesh: str = "fsaverage5",
+    hemi: str = "both",
+) -> pd.DataFrame:
+    roi_frame = build_roi_activity_frame(signal, mesh=mesh, hemi=hemi)
+    grouped = (
+        roi_frame.groupby(["zone_key", "zone"], as_index=False)
+        .agg(
+            value=("value", "sum"),
+            signed_value=("signed_value", "mean"),
+            roi_count=("roi", "count"),
+        )
+        .sort_values("value", ascending=False, ignore_index=True)
+    )
+    total = float(grouped["value"].sum()) if not grouped.empty else 0.0
+    grouped["share"] = grouped["value"] / max(total, 1e-8)
+    grouped["systems"] = grouped["zone_key"].map(
+        lambda key: ", ".join(tp.cast(list[str], ZONE_FAMILY_META[str(key)]["systems"]))
+    )
+    grouped["rank"] = np.arange(1, len(grouped) + 1)
+    return grouped
+
+
+def build_run_roi_frame(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+    top_k: int | None = None,
+) -> pd.DataFrame:
+    aggregate_signal = np.abs(np.asarray(run.preds, dtype=float)).mean(axis=0)
+    return build_roi_activity_frame(aggregate_signal, mesh=mesh, top_k=top_k)
+
+
+def build_run_zone_frame(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+) -> pd.DataFrame:
+    aggregate_signal = np.abs(np.asarray(run.preds, dtype=float)).mean(axis=0)
+    return build_zone_activity_frame(aggregate_signal, mesh=mesh)
+
+
+def build_timestep_zone_frame(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+) -> pd.DataFrame:
+    timeline = collect_timestep_metadata(run)
+    rows: list[dict[str, tp.Any]] = []
+    for idx, signal in enumerate(run.preds):
+        zone_frame = build_zone_activity_frame(signal, mesh=mesh)
+        timing = timeline[idx] if idx < len(timeline) else {"start": idx, "duration": 1.0, "text": ""}
+        for zone_row in zone_frame.itertuples(index=False):
+            rows.append(
+                {
+                    "timestep": idx,
+                    "start_s": round(float(timing["start"]), 3),
+                    "duration_s": round(float(timing["duration"]), 3),
+                    "zone_key": zone_row.zone_key,
+                    "zone": zone_row.zone,
+                    "value": float(zone_row.value),
+                    "share": float(zone_row.share),
+                    "systems": zone_row.systems,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_selected_timestep_roi_frame(
+    run: PredictionRun,
+    *,
+    indices: list[int] | None = None,
+    mesh: str = "fsaverage5",
+    top_k: int = 10,
+) -> pd.DataFrame:
+    if indices is None:
+        summary = summarize_predictions(run.preds)
+        strongest = int(summary.sort_values("mean_abs", ascending=False).iloc[0]["timestep"])
+        indices = [0, strongest, len(run.preds) - 1]
+    selected = list(dict.fromkeys(idx for idx in indices if 0 <= idx < len(run.preds)))
+    timeline = collect_timestep_metadata(run)
+    frames: list[pd.DataFrame] = []
+    for idx in selected:
+        roi_frame = build_roi_activity_frame(run.preds[idx], mesh=mesh, top_k=top_k).copy()
+        timing = timeline[idx] if idx < len(timeline) else {"start": idx, "duration": 1.0, "text": ""}
+        roi_frame.insert(0, "timestep", idx)
+        roi_frame.insert(1, "start_s", round(float(timing["start"]), 3))
+        roi_frame.insert(2, "duration_s", round(float(timing["duration"]), 3))
+        frames.append(roi_frame)
+    if not frames:
+        return pd.DataFrame(
+            columns=["timestep", "start_s", "duration_s", "roi", "zone", "value", "share", "signed_value", "systems", "rank"]
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def _normalize_emotion_lexical_scores(affect: dict[str, tp.Any]) -> dict[str, float]:
+    raw_scores = tp.cast(dict[str, int], affect.get("scores", {}))
+    return {
+        emotion: min(float(raw_scores.get(emotion, 0)) / 2.0, 1.0)
+        for emotion in EMOTION_AXES
+    }
+
+
+def build_emotion_hypothesis_frame(
+    run: PredictionRun,
+    *,
+    timestep: int | None = None,
+    mesh: str = "fsaverage5",
+) -> pd.DataFrame:
+    if timestep is None:
+        signal = np.abs(np.asarray(run.preds, dtype=float)).mean(axis=0)
+        text = collect_run_text(run)
+        summary_frame = summarize_predictions(run.preds)
+        energy_ratio = 0.5 if summary_frame.empty else 1.0
+    else:
+        signal = np.asarray(run.preds[timestep], dtype=float)
+        timing = collect_timestep_metadata(run)
+        text = timing[timestep]["text"] if timestep < len(timing) else collect_run_text(run)
+        summary_frame = summarize_predictions(run.preds)
+        peak = max(float(summary_frame["mean_abs"].max()), 1e-8)
+        energy_ratio = float(summary_frame.loc[summary_frame["timestep"] == timestep, "mean_abs"].iloc[0]) / peak
+
+    zone_frame = build_zone_activity_frame(signal, mesh=mesh)
+    affect = infer_affective_cues(text)
+    lexical_scores = _normalize_emotion_lexical_scores(affect)
+    has_lexical_signal = any(score > 0 for score in lexical_scores.values())
+    modality_prior = EMOTION_MODALITY_PRIORS.get(run.input_kind, EMOTION_MODALITY_PRIORS["multimodal"])
+    rows: list[dict[str, tp.Any]] = []
+    for emotion in EMOTION_AXES:
+        zone_score = 0.0
+        zone_drivers: list[tuple[str, float]] = []
+        for zone_row in zone_frame.itertuples(index=False):
+            weight = ZONE_EMOTION_WEIGHTS.get(str(zone_row.zone_key), ZONE_EMOTION_WEIGHTS["association_other"])[emotion]
+            contribution = float(zone_row.share) * float(weight)
+            zone_score += contribution
+            if contribution > 0:
+                zone_drivers.append((str(zone_row.zone), contribution))
+        zone_score = min(zone_score / 0.34, 1.0)
+        lexical_score = lexical_scores[emotion]
+        prior_score = float(modality_prior[emotion])
+        if has_lexical_signal:
+            score = (0.58 * lexical_score) + (0.30 * zone_score) + (0.12 * prior_score)
+        else:
+            score = (0.76 * zone_score) + (0.24 * prior_score)
+        if emotion == "calm":
+            score *= 0.9 + (0.18 * (1.0 - energy_ratio))
+        elif emotion in {"fear", "anger", "joy", "desire"}:
+            score += 0.06 * energy_ratio
+        elif emotion == "sadness":
+            score += 0.03 * (1.0 - abs(energy_ratio - 0.45))
+        score = float(np.clip(score, 0.0, 1.0))
+        lexical_hits = tp.cast(dict[str, list[str]], affect.get("hits_by_emotion", {})).get(emotion, [])
+        driver_labels = [label for label, _ in sorted(zone_drivers, key=lambda item: item[1], reverse=True)[:3]]
+        rows.append(
+            {
+                "emotion": emotion,
+                "label": EMOTION_LABELS[emotion],
+                "score": score,
+                "lexical_score": float(lexical_score),
+                "zone_score": float(zone_score),
+                "modality_prior": float(prior_score),
+                "top_zone_drivers": ", ".join(driver_labels),
+                "lexical_hits": ", ".join(lexical_hits),
+            }
+        )
+    frame = pd.DataFrame(rows).sort_values("score", ascending=False, ignore_index=True)
+    frame["score_pct"] = (frame["score"] * 100.0).round(1)
+    return frame
+
+
+def build_zone_overview_payload(
+    run: PredictionRun,
+    *,
+    mesh: str = "fsaverage5",
+    selected_indices: list[int] | None = None,
+) -> dict[str, tp.Any]:
+    zone_frame = build_run_zone_frame(run, mesh=mesh)
+    roi_frame = build_run_roi_frame(run, mesh=mesh)
+    timestep_zone_frame = build_timestep_zone_frame(run, mesh=mesh)
+    timestep_roi_frame = build_selected_timestep_roi_frame(
+        run,
+        indices=selected_indices,
+        mesh=mesh,
+        top_k=10,
+    )
+    emotion_frame = build_emotion_hypothesis_frame(run, mesh=mesh)
+    return {
+        "cortical_surface_note": (
+            "Les tableaux par zone utilisent le maillage cortical fsaverage5 et l'atlas HCP-MMP. "
+            "Ils decrivent uniquement des ROIs corticales, pas des structures sous-corticales."
+        ),
+        "run_zone_summary": zone_frame.to_dict(orient="records"),
+        "run_top_rois": roi_frame.head(24).to_dict(orient="records"),
+        "zone_timeseries": timestep_zone_frame.to_dict(orient="records"),
+        "selected_timestep_rois": timestep_roi_frame.to_dict(orient="records"),
+        "emotion_hypotheses": emotion_frame.to_dict(orient="records"),
     }
 
 

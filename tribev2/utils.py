@@ -309,10 +309,10 @@ def summarize_by_roi(data: np.ndarray, hemi="both", mesh="fsaverage5"):
 def get_topk_rois(data: np.ndarray, hemi="both", mesh="fsaverage5", k=10) -> list[str]:
     values = summarize_by_roi(data, hemi=hemi, mesh=mesh)
     if hemi == "both_separate":
-        left_labels = get_hcp_labels(mesh=mesh, combine=False, hemi="left").keys()
-        right_labels = get_hcp_labels(mesh=mesh, combine=False, hemi="right").keys()
+        left_labels = list(get_hcp_labels(mesh=mesh, combine=False, hemi="left").keys())
+        right_labels = list(get_hcp_labels(mesh=mesh, combine=False, hemi="right").keys())
         labels = [f"{l}-lh" for l in left_labels] + [f"{l}-rh" for l in right_labels]
     else:
-        labels = get_hcp_labels(mesh=mesh, combine=False, hemi=hemi).keys()
+        labels = list(get_hcp_labels(mesh=mesh, combine=False, hemi=hemi).keys())
     top_k = np.argsort(values)[::-1][:k]
     return np.array(labels)[top_k]
