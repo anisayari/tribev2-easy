@@ -965,9 +965,17 @@ def render_animated_brain_3d_html(
         }}
         .brain3d-toolbar {{
           display: flex;
-          gap: 10px;
+          justify-content: space-between;
+          gap: 14px;
+          flex-wrap: wrap;
           margin-bottom: 12px;
           align-items: center;
+        }}
+        .brain3d-controls {{
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          flex-wrap: wrap;
         }}
         .brain3d-btn {{
           border: 1px solid rgba(23, 23, 23, 0.12);
@@ -975,18 +983,79 @@ def render_animated_brain_3d_html(
           background: white;
           padding: 8px 14px;
           cursor: pointer;
+          transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+          box-shadow: 0 4px 10px rgba(23, 23, 23, 0.04);
+        }}
+        .brain3d-btn:hover {{
+          transform: translateY(-1px);
+          box-shadow: 0 8px 18px rgba(23, 23, 23, 0.09);
+        }}
+        .brain3d-badge {{
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border-radius: 999px;
+          padding: 8px 12px;
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          color: #74341a;
+          background: rgba(183, 67, 22, 0.10);
+          border: 1px solid rgba(183, 67, 22, 0.15);
+        }}
+        .brain3d-badge-live {{
+          color: #8d2500;
+          background: linear-gradient(135deg, rgba(255, 155, 92, 0.28), rgba(183, 67, 22, 0.14));
+          box-shadow: 0 0 0 1px rgba(183, 67, 22, 0.07), 0 8px 20px rgba(183, 67, 22, 0.12);
+        }}
+        .brain3d-badge-dot {{
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          background: #c84f1c;
+          box-shadow: 0 0 0 0 rgba(200, 79, 28, 0.45);
+          animation: brain3d-pulse 1.6s infinite;
         }}
         .brain3d-meta {{
           color: #665f57;
           font-size: 13px;
           line-height: 1.5;
         }}
+        .brain3d-progress {{
+          width: 100%;
+          height: 8px;
+          border-radius: 999px;
+          background: rgba(23, 23, 23, 0.08);
+          overflow: hidden;
+          margin-bottom: 12px;
+        }}
+        .brain3d-progress-fill {{
+          height: 100%;
+          width: 0%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, #ffbf80, #b74316);
+          transition: width 160ms linear;
+        }}
+        @keyframes brain3d-pulse {{
+          0% {{ box-shadow: 0 0 0 0 rgba(200, 79, 28, 0.45); }}
+          70% {{ box-shadow: 0 0 0 10px rgba(200, 79, 28, 0.0); }}
+          100% {{ box-shadow: 0 0 0 0 rgba(200, 79, 28, 0.0); }}
+        }}
       </style>
       <div class="brain3d-wrap">
         <div class="brain3d-toolbar">
-          <button id="brain3d-play" class="brain3d-btn">Play</button>
-          <button id="brain3d-pause" class="brain3d-btn">Pause</button>
+          <div class="brain3d-controls">
+            <button id="brain3d-play" class="brain3d-btn">Play</button>
+            <button id="brain3d-pause" class="brain3d-btn">Pause</button>
+            <div id="brain3d-status" class="brain3d-badge">
+              <span class="brain3d-badge-dot"></span>
+              Auto-play actif
+            </div>
+          </div>
           <div id="brain3d-label" class="brain3d-meta"></div>
+        </div>
+        <div class="brain3d-progress">
+          <div id="brain3d-progress-fill" class="brain3d-progress-fill"></div>
         </div>
         <div id="brain3d-plot" style="width:100%; height:{height}px;"></div>
         <div id="brain3d-summary" class="brain3d-meta"></div>
@@ -998,8 +1067,11 @@ def render_animated_brain_3d_html(
         const plotDiv = document.getElementById("brain3d-plot");
         const label = document.getElementById("brain3d-label");
         const summary = document.getElementById("brain3d-summary");
+        const status = document.getElementById("brain3d-status");
+        const progressFill = document.getElementById("brain3d-progress-fill");
         let currentIndex = 0;
         let timer = null;
+        let orbitTick = 0;
 
         const trace = {{
           type: "mesh3d",
@@ -1034,17 +1106,32 @@ def render_animated_brain_3d_html(
           }},
           uirevision: "brain3d-fixed",
         }};
-        Plotly.newPlot(plotDiv, [trace], layout, {{
-          displayModeBar: true,
-          responsive: true,
-          scrollZoom: true,
-        }});
+
+        function cameraEye(stepSeed) {{
+          const angle = -1.18 + stepSeed * 0.24;
+          const radius = 1.55;
+          return {{
+            x: -Math.cos(angle) * radius,
+            y: Math.sin(angle) * radius * 0.45,
+            z: 0.82 + 0.07 * Math.sin(angle * 0.55),
+          }};
+        }}
+
+        function setPlaying(isPlaying) {{
+          status.innerHTML = isPlaying
+            ? '<span class="brain3d-badge-dot"></span>Auto-play actif'
+            : '<span class="brain3d-badge-dot"></span>Pause';
+          status.classList.toggle("brain3d-badge-live", isPlaying);
+        }}
 
         function renderFrame(index) {{
           currentIndex = ((index % frames.length) + frames.length) % frames.length;
           const frame = frames[currentIndex];
+          orbitTick += 1;
           Plotly.restyle(plotDiv, {{intensity: [frame.intensity]}}, [0]);
+          Plotly.relayout(plotDiv, {{"scene.camera.eye": cameraEye(orbitTick)}});
           label.textContent = `Timestep ${{frame.index + 1}} / ${{frames.length}} | ${{Number(frame.start).toFixed(2)}}s`;
+          progressFill.style.width = `${{((currentIndex + 1) / Math.max(frames.length, 1)) * 100}}%`;
           const parts = [frame.summary, `Zone probable: ${{frame.zone}}`, `Valence: ${{frame.valence}}`];
           if (frame.text) {{
             parts.push(`Texte: ${{frame.text}}`);
@@ -1053,7 +1140,8 @@ def render_animated_brain_3d_html(
         }}
 
         function play() {{
-          if (timer !== null || frames.length <= 1) return;
+          if (timer !== null) return;
+          setPlaying(true);
           timer = window.setInterval(() => renderFrame(currentIndex + 1), payload.frameDurationMs);
         }}
 
@@ -1062,11 +1150,19 @@ def render_animated_brain_3d_html(
             window.clearInterval(timer);
             timer = null;
           }}
+          setPlaying(false);
         }}
 
         document.getElementById("brain3d-play").addEventListener("click", play);
         document.getElementById("brain3d-pause").addEventListener("click", pause);
-        renderFrame(0);
+        Plotly.newPlot(plotDiv, [trace], layout, {{
+          displayModeBar: true,
+          responsive: true,
+          scrollZoom: true,
+        }}).then(() => {{
+          renderFrame(0);
+          play();
+        }});
       </script>
     </div>
     """

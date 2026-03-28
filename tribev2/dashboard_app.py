@@ -244,6 +244,25 @@ def get_run_cache_key(run: PredictionRun) -> str:
     return f"{source_key}:{signal_key}"
 
 
+def get_cached_animated_3d_html(
+    run: PredictionRun,
+    *,
+    max_frames: int = 30,
+    height: int = 760,
+    spinner_label: str = "Generation de la vue 3D animee...",
+) -> str:
+    html_cache = st.session_state.setdefault("animated_3d_html", {})
+    html_key = f"{get_run_cache_key(run)}:3d:{max_frames}:{height}"
+    if html_key not in html_cache:
+        with st.spinner(spinner_label):
+            html_cache[html_key] = render_animated_brain_3d_html(
+                run,
+                max_frames=max_frames,
+                height=height,
+            )
+    return tp.cast(str, html_cache[html_key])
+
+
 def build_synced_player_html(run: PredictionRun) -> str:
     if run.source_path is None or run.input_kind not in {"video", "audio"}:
         raise ValueError("Synced playback is only available for audio and video runs with a source file.")
@@ -732,23 +751,18 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
             tab_offset = 1
 
     with tabs[tab_offset]:
-        html_cache = st.session_state.setdefault("animated_3d_html", {})
-        html_key = get_run_cache_key(run)
-        if st.button("Generer la vue 3D animee", width="stretch"):
-            with st.spinner("Generation de la vue 3D animee..."):
-                html_cache[html_key] = render_animated_brain_3d_html(run)
-        html = html_cache.get(html_key)
-        if html:
-            components.html(html, height=900, scrolling=False)
-            st.download_button(
-                "Telecharger la vue 3D HTML",
-                data=html.encode("utf-8"),
-                file_name=f"tribev2_{run.input_kind}_brain_animation.html",
-                mime="text/html",
-                width="stretch",
-            )
-        else:
-            st.caption("Generez la vue 3D animee pour obtenir un cerveau rotatable avec bouton Play/Pause.")
+        html = get_cached_animated_3d_html(run)
+        components.html(html, height=900, scrolling=False)
+        st.caption(
+            "Lecture auto active. Faites tourner le cerveau avec la souris, puis utilisez Pause pour figer un instant precis."
+        )
+        st.download_button(
+            "Telecharger la vue 3D HTML",
+            data=html.encode("utf-8"),
+            file_name=f"tribev2_{run.input_kind}_brain_animation.html",
+            mime="text/html",
+            width="stretch",
+        )
 
     with tabs[tab_offset + 1]:
         export_cols = st.columns(2)
@@ -831,6 +845,10 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             st.markdown(f"- {bullet}")
         render_source_links(guide["sources"])
 
+    st.markdown("**Comparaison animee**")
+    st.caption(
+        "Chaque cerveau 3D demarre automatiquement en boucle. Sur une image statique, une rotation douce de camera rend la lecture plus visible."
+    )
     cols = st.columns(len(run.runs), gap="large")
     for idx, (col, item, description) in enumerate(zip(cols, run.runs, descriptions), start=1):
         with col:
@@ -844,6 +862,24 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             st.image(
                 gif_cache[gif_key],
                 caption="Animation cerebrale en boucle",
+                width="stretch",
+            )
+            image_html = get_cached_animated_3d_html(
+                item,
+                max_frames=18,
+                height=620,
+                spinner_label=f"Generation de la 3D animee image {idx}...",
+            )
+            st.markdown("**Vue 3D animee**")
+            components.html(image_html, height=690, scrolling=False)
+            st.caption(
+                "Auto-play actif. Faites glisser la scene pour orienter le cerveau, ou utilisez Pause pour inspecter une pose."
+            )
+            st.download_button(
+                f"3D HTML image {idx}",
+                data=image_html.encode("utf-8"),
+                file_name=f"tribev2_image_{idx}_brain_animation.html",
+                mime="text/html",
                 width="stretch",
             )
             interpretation = build_result_interpretation(
@@ -861,14 +897,6 @@ def comparison_results_panel(run: ImageComparisonRun) -> None:
             )
             with st.expander("Lecture par timestep", expanded=False):
                 st.dataframe(build_timestep_report_frame(item), width="stretch", height=260)
-            animated_3d_cache = st.session_state.setdefault("animated_3d_html", {})
-            image_3d_key = get_run_cache_key(item)
-            if st.button(f"Generer la 3D animee image {idx}", width="stretch", key=f"image3d_{idx}"):
-                with st.spinner(f"Generation de la 3D animee image {idx}..."):
-                    animated_3d_cache[image_3d_key] = render_animated_brain_3d_html(item)
-            image_html = animated_3d_cache.get(image_3d_key)
-            if image_html:
-                components.html(image_html, height=760, scrolling=False)
             with st.expander(f"Pourquoi l'image {idx} genere cette carte", expanded=False):
                 render_explainability_report(
                     build_explainability_report(

@@ -20,6 +20,7 @@ from tribev2.easy import (
     describe_timestep,
     infer_affective_cues,
     prepare_events,
+    render_animated_brain_3d_html,
     render_prediction_gif,
     resolve_text_model_name,
 )
@@ -308,6 +309,61 @@ def test_render_prediction_gif_returns_bytes(monkeypatch):
     gif_bytes = render_prediction_gif(run, max_frames=3)
 
     assert gif_bytes[:6] in {b"GIF87a", b"GIF89a"}
+
+
+def test_render_animated_brain_3d_html_autoplays(monkeypatch):
+    class FakePlotter:
+        _mesh = {
+            "both": {
+                "coords": np.array(
+                    [
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                    ]
+                ),
+                "faces": np.array([[0, 1, 2], [0, 2, 3]], dtype=int),
+            }
+        }
+
+        def get_stat_map(self, signal):
+            return {"both": np.asarray(signal, dtype=float)}
+
+    monkeypatch.setattr(easy_module, "get_pyvista_plotter", lambda mesh: FakePlotter())
+    monkeypatch.setattr(
+        easy_module,
+        "collect_timestep_metadata",
+        lambda run: [
+            {"index": 0, "start": 0.0, "duration": 0.6, "text": "frame 1"},
+            {"index": 1, "start": 0.6, "duration": 0.6, "text": "frame 2"},
+        ],
+    )
+    monkeypatch.setattr(
+        easy_module,
+        "build_timestep_reports",
+        lambda run, indices=None: [
+            {
+                "text": f"frame {idx + 1}",
+                "summary": "resume",
+                "zone": "occipitale",
+                "valence": "indeterminee",
+            }
+            for idx in (indices or [0, 1])
+        ],
+    )
+    run = PredictionRun(
+        events=build_text_events_from_text("hello hope"),
+        preds=np.array([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]], dtype=float),
+        segments=[],
+        input_kind="image",
+    )
+
+    html = render_animated_brain_3d_html(run, max_frames=2, height=320)
+
+    assert "Auto-play actif" in html
+    assert "scene.camera.eye" in html
+    assert "play();" in html
 
 
 def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):
