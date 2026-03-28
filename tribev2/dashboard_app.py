@@ -87,31 +87,219 @@ def apply_theme() -> None:
     st.markdown(
         """
         <style>
+          @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');
           :root {
-            --bg: #f6f2ea;
-            --panel: #fffaf2;
-            --ink: #171717;
-            --muted: #665f57;
-            --accent: #b74316;
-            --accent-soft: #f2d2c5;
+            --bg: #edf1f5;
+            --bg-deep: #dfe5eb;
+            --panel: rgba(255, 255, 255, 0.78);
+            --panel-solid: #ffffff;
+            --ink: #0f1722;
+            --muted: #617082;
+            --line: rgba(15, 23, 34, 0.10);
+            --accent: #ff6a1f;
+            --accent-strong: #e55610;
+            --accent-soft: rgba(255, 106, 31, 0.12);
+            --navy: #0e1724;
+            --navy-soft: #182335;
+          }
+          html, body, [class*="css"] {
+            font-family: "IBM Plex Sans", sans-serif;
+          }
+          h1, h2, h3, h4, h5, h6 {
+            font-family: "Space Grotesk", sans-serif;
+            letter-spacing: -0.03em;
           }
           .stApp {
             background:
-              radial-gradient(circle at top right, rgba(183, 67, 22, 0.10), transparent 30%),
-              linear-gradient(180deg, #fbf8f2 0%, var(--bg) 100%);
+              radial-gradient(circle at top right, rgba(255, 106, 31, 0.11), transparent 22%),
+              linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
             color: var(--ink);
           }
-          .tribe-hero {
-            padding: 1.2rem 1.4rem;
-            border: 1px solid rgba(23, 23, 23, 0.08);
-            border-radius: 20px;
-            background: linear-gradient(135deg, rgba(255,250,242,0.95), rgba(242,210,197,0.85));
-            box-shadow: 0 12px 30px rgba(23, 23, 23, 0.06);
-            margin-bottom: 1rem;
+          .block-container {
+            max-width: 1700px;
+            padding-top: 0.9rem;
+            padding-bottom: 1.1rem;
+            padding-left: 1.2rem;
+            padding-right: 1.2rem;
           }
-          .tribe-caption {
+          [data-testid="stSidebar"] {
+            background:
+              linear-gradient(180deg, var(--navy) 0%, #121d2b 55%, var(--navy-soft) 100%);
+            border-right: 1px solid rgba(255, 255, 255, 0.06);
+          }
+          [data-testid="stSidebar"] * {
+            color: #eef3f8;
+          }
+          [data-testid="stSidebar"] .stTextInput input,
+          [data-testid="stSidebar"] .stTextArea textarea,
+          [data-testid="stSidebar"] .stNumberInput input,
+          [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            color: #f7fafc;
+          }
+          [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] {
+            padding-top: 0.1rem;
+          }
+          .tribe-shellbar {
+            display: grid;
+            grid-template-columns: minmax(340px, 1.2fr) auto;
+            gap: 18px;
+            align-items: end;
+            padding: 1rem 1.05rem 0.85rem 1.05rem;
+            margin-bottom: 0.9rem;
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            background:
+              linear-gradient(135deg, rgba(255,255,255,0.72), rgba(255,255,255,0.54)),
+              radial-gradient(circle at top right, rgba(255, 106, 31, 0.14), transparent 30%);
+            box-shadow: 0 18px 40px rgba(15, 23, 34, 0.07);
+            backdrop-filter: blur(18px);
+          }
+          .tribe-shellbar h1 {
+            margin: 0;
+            font-size: clamp(1.45rem, 2vw, 2.15rem);
+            line-height: 1.02;
+          }
+          .tribe-shellbar p {
+            margin: 0.2rem 0 0 0;
+            max-width: 64ch;
             color: var(--muted);
-            font-size: 0.95rem;
+            font-size: 0.92rem;
+            line-height: 1.45;
+          }
+          .tribe-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin-bottom: 0.4rem;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent-strong);
+          }
+          .tribe-pills {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            align-items: center;
+          }
+          .tribe-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.48rem 0.75rem;
+            border-radius: 999px;
+            background: rgba(15, 23, 34, 0.05);
+            border: 1px solid rgba(15, 23, 34, 0.07);
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #18212d;
+          }
+          .tribe-sectionhead {
+            margin-bottom: 0.6rem;
+          }
+          .tribe-sectionhead h3 {
+            margin: 0;
+            font-size: 1rem;
+            line-height: 1.1;
+          }
+          .tribe-sectionhead p {
+            margin: 0.16rem 0 0 0;
+            color: var(--muted);
+            font-size: 0.85rem;
+            line-height: 1.4;
+          }
+          div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: 0 10px 26px rgba(15, 23, 34, 0.05);
+            backdrop-filter: blur(16px);
+          }
+          div[data-testid="stMetric"] {
+            background: rgba(255, 255, 255, 0.54);
+            border: 1px solid rgba(15, 23, 34, 0.08);
+            border-radius: 14px;
+            padding: 0.35rem 0.6rem;
+            min-height: 0;
+          }
+          div[data-testid="stMetricLabel"] p {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+          }
+          div[data-testid="stMetricValue"] {
+            font-family: "Space Grotesk", sans-serif;
+          }
+          .stTabs [data-baseweb="tab-list"] {
+            gap: 0.35rem;
+            padding-bottom: 0.15rem;
+          }
+          .stTabs [data-baseweb="tab"] {
+            height: 2.25rem;
+            border-radius: 999px;
+            padding: 0 0.95rem;
+            background: rgba(15, 23, 34, 0.05);
+            border: 1px solid rgba(15, 23, 34, 0.06);
+          }
+          .stTabs [aria-selected="true"] {
+            background: linear-gradient(135deg, #111827, #202b39);
+            color: white;
+            box-shadow: 0 10px 18px rgba(15, 23, 34, 0.14);
+          }
+          .stButton > button, .stDownloadButton > button {
+            height: 2.6rem;
+            border-radius: 12px;
+            border: 1px solid rgba(15, 23, 34, 0.08);
+            font-weight: 600;
+            letter-spacing: 0.01em;
+          }
+          .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+            border: none;
+            color: white;
+            box-shadow: 0 12px 22px rgba(229, 86, 16, 0.24);
+          }
+          .stButton > button:hover, .stDownloadButton > button:hover {
+            border-color: rgba(15, 23, 34, 0.16);
+          }
+          .stTextInput input, .stTextArea textarea, .stNumberInput input, [data-baseweb="select"] > div {
+            background: rgba(255, 255, 255, 0.82);
+            border-radius: 12px;
+            border: 1px solid rgba(15, 23, 34, 0.08);
+          }
+          div[data-testid="stFileUploader"] section {
+            border-radius: 16px;
+            border: 1px dashed rgba(15, 23, 34, 0.18);
+            background: rgba(255, 255, 255, 0.46);
+          }
+          div[data-testid="stDataFrame"] {
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid rgba(15, 23, 34, 0.08);
+          }
+          .tribe-inline-note {
+            margin-top: 0.3rem;
+            color: var(--muted);
+            font-size: 0.8rem;
+          }
+          .tribe-keyline {
+            margin: 0.15rem 0 0.7rem 0;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(15,23,34,0.14), rgba(15,23,34,0));
+          }
+          @media (max-width: 960px) {
+            .tribe-shellbar {
+              grid-template-columns: 1fr;
+            }
+            .tribe-pills {
+              justify-content: flex-start;
+            }
           }
         </style>
         """,
@@ -122,16 +310,79 @@ def apply_theme() -> None:
 def hero() -> None:
     st.markdown(
         """
-        <div class="tribe-hero">
-          <h1 style="margin:0 0 0.25rem 0;">TRIBE v2 Easy Dashboard</h1>
-          <div class="tribe-caption">
-            Chargez un texte, un audio ou une video, lancez l'inference,
-            puis explorez les activations cerebrales predites directement dans le dashboard.
+        <div class="tribe-shellbar">
+          <div>
+            <div class="tribe-kicker">TRIBE V2 EASY WORKSPACE</div>
+            <h1>Multimodal brain prediction dashboard</h1>
+            <p>
+              Importez une source, lancez l'inference locale GPU, inspectez les surfaces corticales,
+              puis deleguez l'explication du run au chat OpenAI sur la droite.
+            </p>
+          </div>
+          <div class="tribe-pills">
+            <div class="tribe-pill">Local GPU</div>
+            <div class="tribe-pill">Video / audio / texte / image</div>
+            <div class="tribe-pill">3D + exports + chat</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def section_head(title: str, caption: str, *, kicker: str | None = None) -> None:
+    kicker_html = (
+        f'<div class="tribe-kicker" style="margin-bottom:0.18rem;">{kicker}</div>'
+        if kicker
+        else ""
+    )
+    st.markdown(
+        f"""
+        <div class="tribe-sectionhead">
+          {kicker_html}
+          <h3>{title}</h3>
+          <p>{caption}</p>
+        </div>
+        <div class="tribe-keyline"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _format_request_label(request: dict[str, object]) -> str:
+    if request.get("video_path"):
+        return "Video"
+    if request.get("audio_path"):
+        return "Audio"
+    if request.get("text"):
+        return "Texte"
+    if request.get("image_paths"):
+        count = len(tp.cast(list[Path], request["image_paths"]))
+        return f"Images x{count}"
+    return "Aucune source"
+
+
+def render_run_prep_panel(cache_folder: Path, request: dict, options: dict) -> None:
+    with st.container(border=True):
+        section_head(
+            "Launch strip",
+            "Barre de lancement compacte. Le detail complet de la configuration reste dans la colonne de droite du workspace source.",
+            kicker="Launch",
+        )
+        cols = st.columns(3, gap="small")
+        cols[0].metric("Source active", _format_request_label(request))
+        cols[1].metric("Checkpoint", str(options["checkpoint"]).split("/")[-1])
+        cols[2].metric("Chat", str(options["openai_model"]))
+        st.markdown(
+            f"""
+            <div class="tribe-inline-note">
+              Cache: <strong>{Path(cache_folder).name or str(cache_folder)}</strong> |
+              Texte: <strong>{options["text_model_name"]}</strong> |
+              Images envoyees au chat: <strong>{int(options["openai_max_images"])}</strong>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 @st.cache_resource(show_spinner=False)
@@ -305,88 +556,93 @@ def render_openai_chat_panel(
     image_detail: str,
     max_images: int,
 ) -> None:
-    st.markdown("### Chat OpenAI")
-    st.caption(
-        "Le chat envoie automatiquement des images de timesteps clefs et les donnees numeriques du run a l'API."
-    )
-    if not api_key.strip():
-        st.info(
-            "Renseignez `OPENAI_API_KEY` dans la sidebar ou dans l'environnement pour activer le chat."
+    with st.container(border=True):
+        section_head(
+            "OpenAI analyst",
+            "Panneau lateral compact pour interroger GPT-5.4 avec les timesteps et les donnees du run.",
+            kicker="Chat",
         )
-        return
-
-    run_key = get_dashboard_run_key(run)
-    sessions = st.session_state.setdefault("openai_chat_sessions", {})
-    session = sessions.setdefault(
-        run_key,
-        {
-            "messages": [],
-            "previous_response_id": None,
-        },
-    )
-    if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
-        sessions[run_key] = {"messages": [], "previous_response_id": None}
-        st.rerun()
-
-    context_bundle = get_cached_openai_context_bundle(
-        run,
-        image_detail=image_detail,
-        max_images=max_images,
-    )
-    context_text, _, labels = context_bundle
-    with st.expander("Contexte envoye au modele", expanded=not session["messages"]):
-        st.markdown(
-            "\n".join(f"- {label}" for label in labels)
-            if labels
-            else "Aucune image de timestep selectionnee."
-        )
-        st.code(context_text, language="json")
-
-    for message in session["messages"]:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    prompt = st.chat_input(
-        "Demandez a GPT d'expliquer ce run...",
-        key=f"chat_input_{run_key}",
-    )
-    if not prompt:
-        return
-
-    session["messages"].append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        try:
-            with st.spinner(f"{model} analyse le run..."):
-                reply, response_id, labels = request_openai_run_explanation(
-                    api_key=api_key.strip(),
-                    model=model.strip(),
-                    reasoning_effort=reasoning_effort,
-                    user_prompt=prompt,
-                    run=run,
-                    previous_response_id=session.get("previous_response_id"),
-                    include_context=session.get("previous_response_id") is None,
-                    image_detail=image_detail,
-                    max_images=max_images,
-                    context_bundle=context_bundle,
-                )
-        except Exception as exc:
-            session["messages"].append(
-                {
-                    "role": "assistant",
-                    "content": f"Echec de l'appel OpenAI: {exc}",
-                }
+        if not api_key.strip():
+            st.info(
+                "Renseignez `OPENAI_API_KEY` dans la sidebar ou dans l'environnement pour activer le chat."
             )
-            st.exception(exc)
             return
-        if labels and session.get("previous_response_id") is None:
-            st.caption("Contexte envoye: " + " | ".join(labels))
-        st.markdown(reply)
 
-    session["messages"].append({"role": "assistant", "content": reply})
-    session["previous_response_id"] = response_id
+        run_key = get_dashboard_run_key(run)
+        sessions = st.session_state.setdefault("openai_chat_sessions", {})
+        session = sessions.setdefault(
+            run_key,
+            {
+                "messages": [],
+                "previous_response_id": None,
+            },
+        )
+        chat_meta = st.columns(2, gap="small")
+        chat_meta[0].metric("Model", model)
+        chat_meta[1].metric("Images", int(max_images))
+        if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
+            sessions[run_key] = {"messages": [], "previous_response_id": None}
+            st.rerun()
+
+        context_bundle = get_cached_openai_context_bundle(
+            run,
+            image_detail=image_detail,
+            max_images=max_images,
+        )
+        context_text, _, labels = context_bundle
+        with st.expander("Contexte envoye au modele", expanded=not session["messages"]):
+            st.markdown(
+                "\n".join(f"- {label}" for label in labels)
+                if labels
+                else "Aucune image de timestep selectionnee."
+            )
+            st.code(context_text, language="json")
+
+        for message in session["messages"]:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        prompt = st.chat_input(
+            "Demandez a GPT d'expliquer ce run...",
+            key=f"chat_input_{run_key}",
+        )
+        if not prompt:
+            return
+
+        session["messages"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner(f"{model} analyse le run..."):
+                    reply, response_id, labels = request_openai_run_explanation(
+                        api_key=api_key.strip(),
+                        model=model.strip(),
+                        reasoning_effort=reasoning_effort,
+                        user_prompt=prompt,
+                        run=run,
+                        previous_response_id=session.get("previous_response_id"),
+                        include_context=session.get("previous_response_id") is None,
+                        image_detail=image_detail,
+                        max_images=max_images,
+                        context_bundle=context_bundle,
+                    )
+            except Exception as exc:
+                session["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": f"Echec de l'appel OpenAI: {exc}",
+                    }
+                )
+                st.exception(exc)
+                return
+            if labels and session.get("previous_response_id") is None:
+                st.caption("Contexte envoye: " + " | ".join(labels))
+            st.markdown(reply)
+
+        session["messages"].append({"role": "assistant", "content": reply})
+        session["previous_response_id"] = response_id
 
 
 def build_synced_player_html(run: PredictionRun) -> str:
@@ -612,52 +868,6 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
             "un backbone public non gated compatible avec le codeur texte du projet."
         )
 
-    tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
-    request: dict[str, object] = {}
-    with tabs[0]:
-        video_file = st.file_uploader(
-            "Importer une video", type=["mp4", "mov", "avi", "mkv", "webm"]
-        )
-        if video_file is not None:
-            request["video_path"] = save_upload(video_file, cache_folder / "uploads")
-            st.video(video_file.getvalue())
-    with tabs[1]:
-        audio_file = st.file_uploader(
-            "Importer un audio", type=["wav", "mp3", "flac", "ogg"]
-        )
-        if audio_file is not None:
-            request["audio_path"] = save_upload(audio_file, cache_folder / "uploads")
-            st.audio(audio_file.getvalue())
-    with tabs[2]:
-        text_input = st.text_area(
-            "Texte brut",
-            placeholder="Collez un script, une transcription ou un prompt narratif.",
-            height=180,
-        )
-        text_file = st.file_uploader("ou importer un .txt", type=["txt"])
-        if text_file is not None:
-            text_value = text_file.getvalue().decode("utf-8")
-            st.text_area("Apercu du fichier", value=text_value, height=160)
-            request["text"] = text_value
-        elif text_input.strip():
-            request["text"] = text_input
-    with tabs[3]:
-        image_files = st.file_uploader(
-            "Importer jusqu'a 2 images",
-            type=["png", "jpg", "jpeg", "webp", "bmp"],
-            accept_multiple_files=True,
-        )
-        if image_files:
-            selected = image_files[:2]
-            if len(image_files) > 2:
-                st.warning("Seules les 2 premieres images seront utilisees.")
-            image_paths = [save_upload(file, cache_folder / "uploads") for file in selected]
-            request["image_paths"] = image_paths
-            cols = st.columns(len(selected))
-            for col, file in zip(cols, selected):
-                with col:
-                    render_bounded_image(file.getvalue(), caption=file.name, max_height=260)
-
     options = {
         "checkpoint": checkpoint,
         "device": device,
@@ -675,11 +885,101 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict]:
         "openai_max_images": openai_max_images,
         "openai_api_key": openai_api_key,
     }
+
+    request: dict[str, object] = {}
+    with st.container(border=True):
+        section_head(
+            "Input workspace",
+            "Choisissez une seule modalite par run. La colonne de droite affiche immediatement le contexte operationnel actif.",
+            kicker="Source",
+        )
+        workspace_col, ops_col = st.columns([1.7, 0.95], gap="large")
+        with workspace_col:
+            tabs = st.tabs(["Video", "Audio", "Texte", "Images"])
+            with tabs[0]:
+                video_file = st.file_uploader(
+                    "Importer une video", type=["mp4", "mov", "avi", "mkv", "webm"]
+                )
+                if video_file is not None:
+                    request["video_path"] = save_upload(video_file, cache_folder / "uploads")
+                    st.video(video_file.getvalue())
+            with tabs[1]:
+                audio_file = st.file_uploader(
+                    "Importer un audio", type=["wav", "mp3", "flac", "ogg"]
+                )
+                if audio_file is not None:
+                    request["audio_path"] = save_upload(audio_file, cache_folder / "uploads")
+                    st.audio(audio_file.getvalue())
+            with tabs[2]:
+                text_input = st.text_area(
+                    "Texte brut",
+                    placeholder="Collez un script, une transcription ou un prompt narratif.",
+                    height=176,
+                )
+                text_file = st.file_uploader("ou importer un .txt", type=["txt"])
+                if text_file is not None:
+                    text_value = text_file.getvalue().decode("utf-8")
+                    st.text_area("Apercu du fichier", value=text_value, height=160)
+                    request["text"] = text_value
+                elif text_input.strip():
+                    request["text"] = text_input
+            with tabs[3]:
+                image_files = st.file_uploader(
+                    "Importer jusqu'a 2 images",
+                    type=["png", "jpg", "jpeg", "webp", "bmp"],
+                    accept_multiple_files=True,
+                )
+                if image_files:
+                    selected = image_files[:2]
+                    if len(image_files) > 2:
+                        st.warning("Seules les 2 premieres images seront utilisees.")
+                    image_paths = [save_upload(file, cache_folder / "uploads") for file in selected]
+                    request["image_paths"] = image_paths
+                    cols = st.columns(len(selected))
+                    for col, file in zip(cols, selected):
+                        with col:
+                            render_bounded_image(file.getvalue(), caption=file.name, max_height=240)
+        with ops_col:
+            section_head(
+                "Control rail",
+                "Etat du run, configuration active, et preparation du chat d'analyse.",
+                kicker="Overview",
+            )
+            rail_cols = st.columns(2)
+            rail_cols[0].metric("Source", _format_request_label(request))
+            rail_cols[1].metric("Device", str(device).upper())
+            st.metric("Cache", Path(cache_folder).name or str(cache_folder))
+            st.metric("Chat model", openai_model)
+            st.markdown(
+                f"""
+                <div class="tribe-inline-note">
+                  Direct text: <strong>{'on' if direct_text else 'off'}</strong><br/>
+                  WhisperX: <strong>{'on' if transcribe else 'off'}</strong><br/>
+                  Image clip: <strong>{image_duration:.1f}s @ {image_fps} fps</strong>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
     return request, options
 
 
 def run_prediction_ui(cache_folder: Path, request: dict, options: dict) -> None:
-    if st.button("Lancer la prediction", type="primary", width="stretch"):
+    render_run_prep_panel(cache_folder, request, options)
+
+    launch_cols = st.columns([1.35, 0.8], gap="large")
+    with launch_cols[0]:
+        st.markdown(
+            """
+            <div class="tribe-inline-note">
+              Le run charge le backbone local, prepare les evenements, puis construit les surfaces et exports du dashboard.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with launch_cols[1]:
+        launch_pressed = st.button("Lancer la prediction", type="primary", width="stretch")
+
+    if launch_pressed:
         if not request:
             st.error("Importez d'abord une video, un audio ou un texte.")
             return
@@ -770,209 +1070,238 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
         return comparison_results_panel(run)
 
     summary = summarize_predictions(run.preds)
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Timesteps gardes", len(run.preds))
-    metric_cols[1].metric("Vertices", run.preds.shape[1])
-    metric_cols[2].metric("Modalite", run.input_kind.capitalize())
-    metric_cols[3].metric("Evenements", len(run.events))
-
-    chart_col, preview_col = st.columns([1.3, 1.0], gap="large")
-    with chart_col:
-        st.subheader("Resume temporel")
-        st.line_chart(
-            summary.set_index("timestep")[["mean_abs", "std"]],
-            height=260,
-            width="stretch",
+    with st.container(border=True):
+        section_head(
+            "Run status",
+            "Vue compacte du run courant avec volume de prediction, source active et intensite moyenne.",
+            kicker="Metrics",
         )
-    with preview_col:
-        st.subheader("Entree")
-        render_input_preview(run)
+        metric_cols = st.columns(5, gap="small")
+        metric_cols[0].metric("Timesteps", len(run.preds))
+        metric_cols[1].metric("Vertices", run.preds.shape[1])
+        metric_cols[2].metric("Modalite", run.input_kind.capitalize())
+        metric_cols[3].metric("Evenements", len(run.events))
+        metric_cols[4].metric("Mean abs", f"{float(summary['mean_abs'].mean()):.4f}")
 
-    st.subheader("Lecture animee")
-    animation_cols = st.columns([1.25, 1.0], gap="large")
-    animation_cache = st.session_state.setdefault("brain_gif_bytes", {})
-    animation_key = get_run_cache_key(run)
-    if animation_key not in animation_cache:
-        with st.spinner("Generation de l'animation cerebrale..."):
-            animation_cache[animation_key] = render_prediction_gif(run)
-    with animation_cols[0]:
-        st.image(
-            animation_cache[animation_key],
-            caption="Animation cerebrale en boucle",
-            width="stretch",
-        )
-    with animation_cols[1]:
-        render_raw_timestep_table(run)
-
-    st.subheader("Exports")
-    export_cols = st.columns(3)
-    export_cols[0].download_button(
-        "Predictions .npy",
-        data=build_npy_download(run.preds),
-        file_name="tribev2_predictions.npy",
-        mime="application/octet-stream",
-        width="stretch",
-    )
-    export_cols[1].download_button(
-        "Events .csv",
-        data=run.events.to_csv(index=False).encode("utf-8"),
-        file_name="tribev2_events.csv",
-        mime="text/csv",
-        width="stretch",
-    )
-    export_cols[2].download_button(
-        "Resume .csv",
-        data=summary.to_csv(index=False).encode("utf-8"),
-        file_name="tribev2_summary.csv",
-        mime="text/csv",
-        width="stretch",
-    )
-
-    tab_labels = ["3D anime", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
-    synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
-    if synced_media_available:
-        tab_labels = ["Lecteur synchronise"] + tab_labels
-    tabs = st.tabs(tab_labels)
-    tab_offset = 0
-
-    if synced_media_available:
-        with tabs[0]:
-            sync_cache = st.session_state.setdefault("sync_player_html", {})
-            sync_key = get_run_cache_key(run)
-            if st.button("Preparer le lecteur synchronise", width="stretch"):
-                with st.spinner("Preparation du lecteur synchronise..."):
-                    sync_cache[sync_key] = build_synced_player_html(run)
-            sync_html = sync_cache.get(sync_key)
-            if sync_html:
-                components.html(sync_html, height=860, scrolling=False)
-            else:
-                st.caption("Ce lecteur associe le temps de lecture du media a la carte cerebrale predite correspondante.")
-            tab_offset = 1
-
-    with tabs[tab_offset]:
-        html = get_cached_animated_3d_html(run)
-        components.html(html, height=900, scrolling=False)
-        st.caption(
-            "Lecture auto active. Faites tourner le cerveau avec la souris, puis utilisez Pause pour figer un instant precis."
-        )
-        st.download_button(
-            "Telecharger la vue 3D HTML",
-            data=html.encode("utf-8"),
-            file_name=f"tribev2_{run.input_kind}_brain_animation.html",
-            mime="text/html",
-            width="stretch",
-        )
-
-    with tabs[tab_offset + 1]:
-        export_cols = st.columns(2)
-        max_timesteps = export_cols[0].slider(
-            "Timesteps a inclure",
-            min_value=1,
-            max_value=len(run.preds),
-            value=min(15, len(run.preds)),
-        )
-        fps_options = {
-            "1 fps brut": None,
-            "6 fps": 6,
-            "12 fps": 12,
-            "24 fps": 24,
-        }
-        fps_label = export_cols[1].selectbox(
-            "Fluidite",
-            options=list(fps_options),
-            index=2,
-        )
-        export_key = f"{max_timesteps}:{fps_options[fps_label]}"
-        video_cache = st.session_state.setdefault("video_exports", {})
-        if st.button("Generer le MP4", width="stretch"):
-            with st.spinner("Generation du MP4..."):
-                video_path = export_prediction_video(
-                    run,
-                    output_folder=cache_folder / "exports",
-                    max_timesteps=max_timesteps,
-                    interpolated_fps=fps_options[fps_label],
+    workspace_col, inspect_col = st.columns([1.72, 1.0], gap="large")
+    with workspace_col:
+        with st.container(border=True):
+            section_head(
+                "Timeline surface",
+                "Courbe d'activite globale et lecture cerebrale en boucle dans un seul espace de travail.",
+                kicker="Workspace",
+            )
+            chart_col, animation_col = st.columns([0.9, 1.15], gap="large")
+            with chart_col:
+                st.line_chart(
+                    summary.set_index("timestep")[["mean_abs", "std"]],
+                    height=248,
+                    width="stretch",
                 )
-            video_cache[export_key] = str(video_path)
-        video_path_str = video_cache.get(export_key)
-        if video_path_str:
-            video_path = Path(video_path_str)
-            st.video(video_path.read_bytes())
-            st.download_button(
-                "Telecharger le MP4",
-                data=video_path.read_bytes(),
-                file_name=video_path.name,
-                mime="video/mp4",
-                width="stretch",
-            )
-        else:
-            st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
+            animation_cache = st.session_state.setdefault("brain_gif_bytes", {})
+            animation_key = get_run_cache_key(run)
+            if animation_key not in animation_cache:
+                with st.spinner("Generation de l'animation cerebrale..."):
+                    animation_cache[animation_key] = render_prediction_gif(run)
+            with animation_col:
+                st.image(
+                    animation_cache[animation_key],
+                    caption="Brain playback",
+                    width="stretch",
+                )
 
-    with tabs[tab_offset + 2]:
-        if st.button("Generer la mosaique", width="stretch"):
-            st.session_state["mosaic_requested"] = True
-        if st.session_state.get("mosaic_requested"):
-            mosaic = render_prediction_mosaic(run)
-            st.pyplot(mosaic, clear_figure=True, width="stretch")
-
-    with tabs[tab_offset + 3]:
-        st.dataframe(run.events, width="stretch", height=320)
-
-
-def comparison_results_panel(run: ImageComparisonRun) -> None:
-    st.subheader("Comparaison d'images")
-    common_timesteps = min(len(item.preds) for item in run.runs)
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Images", len(run.runs))
-    metric_cols[1].metric("Timesteps communs", common_timesteps)
-    metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
-    metric_cols[3].metric("Modalite", "Images")
-
-    st.markdown("**Comparaison animee**")
-    st.caption(
-        "Chaque cerveau 3D demarre automatiquement en boucle. Sur une image statique, une rotation douce de camera rend la lecture plus visible."
-    )
-    cols = st.columns(len(run.runs), gap="large")
-    for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
-        with col:
-            st.markdown(f"**Image {idx}**")
-            render_input_preview(item)
-            gif_cache = st.session_state.setdefault("brain_gif_bytes", {})
-            gif_key = get_run_cache_key(item)
-            if gif_key not in gif_cache:
-                with st.spinner(f"Generation de l'animation image {idx}..."):
-                    gif_cache[gif_key] = render_prediction_gif(item)
-            st.image(
-                gif_cache[gif_key],
-                caption="Animation cerebrale en boucle",
-                width="stretch",
+        with st.container(border=True):
+            section_head(
+                "Deep views",
+                "Toutes les vues avancees sont regroupees ici pour garder l'app dense et lisible.",
+                kicker="Views",
             )
-            image_html = get_cached_animated_3d_html(
-                item,
-                max_frames=18,
-                height=620,
-                spinner_label=f"Generation de la 3D animee image {idx}...",
+            tab_labels = ["3D anime", "Animation MP4", "Figure multi-timesteps", "Table des evenements"]
+            synced_media_available = run.input_kind in {"video", "audio"} and run.source_path is not None
+            if synced_media_available:
+                tab_labels = ["Lecteur synchronise"] + tab_labels
+            tabs = st.tabs(tab_labels)
+            tab_offset = 0
+
+            if synced_media_available:
+                with tabs[0]:
+                    sync_cache = st.session_state.setdefault("sync_player_html", {})
+                    sync_key = get_run_cache_key(run)
+                    if st.button("Preparer le lecteur synchronise", width="stretch"):
+                        with st.spinner("Preparation du lecteur synchronise..."):
+                            sync_cache[sync_key] = build_synced_player_html(run)
+                    sync_html = sync_cache.get(sync_key)
+                    if sync_html:
+                        components.html(sync_html, height=860, scrolling=False)
+                    else:
+                        st.caption("Associe le temps du media a la carte cerebrale predite.")
+                    tab_offset = 1
+
+            with tabs[tab_offset]:
+                html = get_cached_animated_3d_html(run)
+                components.html(html, height=860, scrolling=False)
+                st.caption(
+                    "Lecture auto active. Faites tourner le cerveau avec la souris, puis utilisez Pause pour figer un instant precis."
+                )
+                st.download_button(
+                    "Telecharger la vue 3D HTML",
+                    data=html.encode("utf-8"),
+                    file_name=f"tribev2_{run.input_kind}_brain_animation.html",
+                    mime="text/html",
+                    width="stretch",
+                )
+
+            with tabs[tab_offset + 1]:
+                export_cols = st.columns(2)
+                max_timesteps = export_cols[0].slider(
+                    "Timesteps a inclure",
+                    min_value=1,
+                    max_value=len(run.preds),
+                    value=min(15, len(run.preds)),
+                )
+                fps_options = {
+                    "1 fps brut": None,
+                    "6 fps": 6,
+                    "12 fps": 12,
+                    "24 fps": 24,
+                }
+                fps_label = export_cols[1].selectbox(
+                    "Fluidite",
+                    options=list(fps_options),
+                    index=2,
+                )
+                export_key = f"{max_timesteps}:{fps_options[fps_label]}"
+                video_cache = st.session_state.setdefault("video_exports", {})
+                if st.button("Generer le MP4", width="stretch"):
+                    with st.spinner("Generation du MP4..."):
+                        video_path = export_prediction_video(
+                            run,
+                            output_folder=cache_folder / "exports",
+                            max_timesteps=max_timesteps,
+                            interpolated_fps=fps_options[fps_label],
+                        )
+                    video_cache[export_key] = str(video_path)
+                video_path_str = video_cache.get(export_key)
+                if video_path_str:
+                    video_path = Path(video_path_str)
+                    st.video(video_path.read_bytes())
+                    st.download_button(
+                        "Telecharger le MP4",
+                        data=video_path.read_bytes(),
+                        file_name=video_path.name,
+                        mime="video/mp4",
+                        width="stretch",
+                    )
+                else:
+                    st.caption("Le MP4 reprend la surface cerebrale predite a chaque timestep.")
+
+            with tabs[tab_offset + 2]:
+                if st.button("Generer la mosaique", width="stretch"):
+                    st.session_state["mosaic_requested"] = True
+                if st.session_state.get("mosaic_requested"):
+                    mosaic = render_prediction_mosaic(run)
+                    st.pyplot(mosaic, clear_figure=True, width="stretch")
+
+            with tabs[tab_offset + 3]:
+                st.dataframe(run.events, width="stretch", height=320)
+
+    with inspect_col:
+        with st.container(border=True):
+            section_head(
+                "Inspector",
+                "La source chargee et la table brute par timestep vivent dans le panneau de droite.",
+                kicker="Inspector",
             )
-            st.markdown("**Vue 3D animee**")
-            components.html(image_html, height=690, scrolling=False)
-            st.caption(
-                "Auto-play actif. Faites glisser la scene pour orienter le cerveau, ou utilisez Pause pour inspecter une pose."
+            render_input_preview(run)
+            render_raw_timestep_table(run, height=312)
+
+        with st.container(border=True):
+            section_head(
+                "Exports",
+                "Telechargements immediats sans quitter le workspace.",
+                kicker="Output",
             )
-            st.download_button(
-                f"3D HTML image {idx}",
-                data=image_html.encode("utf-8"),
-                file_name=f"tribev2_image_{idx}_brain_animation.html",
-                mime="text/html",
-                width="stretch",
-            )
-            with st.expander("Donnees par timestep", expanded=False):
-                render_raw_timestep_table(item, height=260)
-            st.download_button(
-                f"Predictions image {idx}",
-                data=build_npy_download(item.preds),
-                file_name=f"tribev2_image_{idx}_predictions.npy",
+            export_cols = st.columns(3)
+            export_cols[0].download_button(
+                "Predictions .npy",
+                data=build_npy_download(run.preds),
+                file_name="tribev2_predictions.npy",
                 mime="application/octet-stream",
                 width="stretch",
             )
+            export_cols[1].download_button(
+                "Events .csv",
+                data=run.events.to_csv(index=False).encode("utf-8"),
+                file_name="tribev2_events.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+            export_cols[2].download_button(
+                "Resume .csv",
+                data=summary.to_csv(index=False).encode("utf-8"),
+                file_name="tribev2_summary.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+
+
+def comparison_results_panel(run: ImageComparisonRun) -> None:
+    common_timesteps = min(len(item.preds) for item in run.runs)
+    with st.container(border=True):
+        section_head(
+            "Image comparison",
+            "Deux colonnes synchrones, meme echelle, meme maillage cortical, lecture directe sans surcharge de chrome.",
+            kicker="Compare",
+        )
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Images", len(run.runs))
+        metric_cols[1].metric("Timesteps communs", common_timesteps)
+        metric_cols[2].metric("Vertices", run.runs[0].preds.shape[1])
+        metric_cols[3].metric("Modalite", "Images")
+
+    cols = st.columns(len(run.runs), gap="large")
+    for idx, (col, item) in enumerate(zip(cols, run.runs), start=1):
+        with col:
+            with st.container(border=True):
+                section_head(
+                    f"Image {idx}",
+                    "Preview, playback cortical et 3D orientable dans la meme colonne.",
+                    kicker="Panel",
+                )
+                render_input_preview(item)
+                gif_cache = st.session_state.setdefault("brain_gif_bytes", {})
+                gif_key = get_run_cache_key(item)
+                if gif_key not in gif_cache:
+                    with st.spinner(f"Generation de l'animation image {idx}..."):
+                        gif_cache[gif_key] = render_prediction_gif(item)
+                st.image(
+                    gif_cache[gif_key],
+                    caption="Brain playback",
+                    width="stretch",
+                )
+                image_html = get_cached_animated_3d_html(
+                    item,
+                    max_frames=18,
+                    height=620,
+                    spinner_label=f"Generation de la 3D animee image {idx}...",
+                )
+                components.html(image_html, height=690, scrolling=False)
+                st.download_button(
+                    f"3D HTML image {idx}",
+                    data=image_html.encode("utf-8"),
+                    file_name=f"tribev2_image_{idx}_brain_animation.html",
+                    mime="text/html",
+                    width="stretch",
+                )
+                with st.expander("Donnees par timestep", expanded=False):
+                    render_raw_timestep_table(item, height=260)
+                st.download_button(
+                    f"Predictions image {idx}",
+                    data=build_npy_download(item.preds),
+                    file_name=f"tribev2_image_{idx}_predictions.npy",
+                    mime="application/octet-stream",
+                    width="stretch",
+                )
 
 
 def main() -> None:
