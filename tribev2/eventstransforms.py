@@ -126,6 +126,64 @@ class ExtractWordsFromAudio(EventsTransform):
     def whisperx_available(cls) -> bool:
         return cls.whisperx_command() is not None
 
+    @classmethod
+    def whisperx_runtime_config(cls) -> tuple[str, str]:
+        launcher = cls.whisperx_command()
+        if launcher is None:
+            raise RuntimeError(
+                "whisperx transcription requires `uvx whisperx`, `uv tool run whisperx`, "
+                "or a local `python -m whisperx` installation."
+            )
+
+        forced_device = os.getenv("TRIBEV2_WHISPERX_DEVICE", "").strip().lower()
+        if forced_device in {"cpu", "cuda"}:
+            device = forced_device
+        else:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            isolated_uv_launcher = False
+            launcher_head = [str(part).lower() for part in launcher[:3]]
+            if launcher_head:
+                isolated_uv_launcher = launcher_head[0].endswith("uvx") or launcher_head[0].endswith("uvx.exe")
+            if launcher_head[:3] == ["uv", "tool", "run"] or launcher_head[:3] == ["uv.exe", "tool", "run"]:
+                isolated_uv_launcher = True
+            if isolated_uv_launcher and device == "cuda":
+                logger.info(
+                    "WhisperX is running via uv/uvx in an isolated environment; forcing CPU to avoid CUDA mismatch."
+                )
+                device = "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        return device, compute_type
+
+    @staticmethod
+    def _build_subprocess_env() -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if k != "MPLBACKEND"}
+        extra_paths: list[str] = []
+        imageio_ffmpeg_exe: str | None = None
+        try:
+            import imageio_ffmpeg
+
+            imageio_ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            extra_paths.append(str(Path(imageio_ffmpeg_exe).parent))
+        except Exception:
+            imageio_ffmpeg_exe = None
+        extra_paths.extend(
+            [
+                str(Path(sys.executable).parent),
+                str(Path(sys.prefix) / "Library" / "bin"),
+                str(Path(sys.executable).resolve().parent.parent / "Library" / "bin"),
+            ]
+        )
+        current_path = env.get("PATH", "")
+        ordered_paths: list[str] = []
+        for candidate in extra_paths:
+            if candidate and Path(candidate).exists() and candidate not in ordered_paths:
+                ordered_paths.append(candidate)
+        if ordered_paths:
+            env["PATH"] = os.pathsep.join(ordered_paths + [current_path]) if current_path else os.pathsep.join(ordered_paths)
+        if imageio_ffmpeg_exe:
+            env.setdefault("IMAGEIO_FFMPEG_EXE", imageio_ffmpeg_exe)
+        return env
+
     @staticmethod
     def _get_transcript_from_audio(wav_filename: Path, language: str) -> pd.DataFrame:
         import json
@@ -139,8 +197,6 @@ class ExtractWordsFromAudio(EventsTransform):
         if language not in language_codes:
             raise ValueError(f"Language {language} not supported")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        compute_type = "float16" if device == "cuda" else "int8"
         launcher = ExtractWordsFromAudio.whisperx_command()
         if launcher is None:
             raise RuntimeError(
@@ -148,6 +204,7 @@ class ExtractWordsFromAudio(EventsTransform):
                 "or a local `python -m whisperx` installation. Install `uv` in the active "
                 "environment, or install `whisperx` directly."
             )
+        device, compute_type = ExtractWordsFromAudio.whisperx_runtime_config()
 
         with tempfile.TemporaryDirectory() as output_dir:
             logger.info("Running whisperx...")
@@ -171,7 +228,7 @@ class ExtractWordsFromAudio(EventsTransform):
                 "json",
             ]
             cmd = [c for c in cmd if c]  # remove empty args
-            env = {k: v for k, v in os.environ.items() if k != "MPLBACKEND"}
+            env = ExtractWordsFromAudio._build_subprocess_env()
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             except FileNotFoundError as exc:

@@ -68,10 +68,11 @@ class PredictionRun:
 @dataclass
 class ImageComparisonRun:
     runs: list[PredictionRun]
+    compare_kind: str = "image"
 
     @property
     def input_kind(self) -> str:
-        return "image"
+        return self.compare_kind
 
 
 @dataclass
@@ -779,14 +780,51 @@ def normalize_signal_for_display(
     signal: np.ndarray,
     *,
     percentile: int | None = 99,
+    reference_signal: np.ndarray | None = None,
 ) -> np.ndarray:
     """Normalize a signal robustly and silence divide-by-zero edge cases."""
     signal = np.asarray(signal, dtype=float)
     if percentile is None:
         return signal
+    if reference_signal is not None:
+        reference = np.asarray(reference_signal, dtype=float)
+        if reference.size == 0:
+            return np.zeros_like(signal, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            hi = np.percentile(reference, percentile)
+            lo = np.percentile(reference, 100 - percentile)
+            out = np.zeros_like(signal, dtype=float)
+            if np.isfinite(hi) and np.isfinite(lo) and abs(float(hi) - float(lo)) > 1e-12:
+                out = np.clip((signal - lo) / (hi - lo), 0.0, 1.0)
+        return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
     with np.errstate(divide="ignore", invalid="ignore"):
         out = robust_normalize(signal, percentile=percentile)
     return np.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0)
+
+
+def build_display_reference_signal(
+    *items: PredictionRun | np.ndarray | None,
+) -> np.ndarray | None:
+    """Flatten one or more prediction tensors into a shared display reference."""
+    flattened: list[np.ndarray] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, PredictionRun):
+            signal = np.asarray(item.preds, dtype=float)
+        else:
+            signal = np.asarray(item, dtype=float)
+        if signal.size == 0:
+            continue
+        flattened.append(signal.reshape(-1))
+    if not flattened:
+        return None
+    return np.concatenate(flattened, axis=0)
+
+
+def build_comparison_display_reference(run: ImageComparisonRun) -> np.ndarray | None:
+    """Build one shared display scale for a side-by-side comparison run."""
+    return build_display_reference_signal(*(item.preds for item in run.runs))
 
 
 def select_animation_indices(n_timesteps: int, max_frames: int = 72) -> list[int]:
@@ -1446,6 +1484,8 @@ def _get_multimodal_surface_render_data(
     timestep: int,
     mesh: str = "fsaverage5",
     norm_percentile: int | None = 99,
+    surface_smoothing_passes: int = 1,
+    surface_smoothing_blend: float = 0.28,
 ) -> tuple[PlotBrainPyvista, np.ndarray, np.ndarray, np.ndarray, list[str], dict[str, int]] | None:
     channel_signals, channel_labels, alpha_signal, matched_indices = _build_multimodal_overlay_signals(
         run,
@@ -1456,8 +1496,23 @@ def _get_multimodal_surface_render_data(
         return None
 
     plotter = get_pyvista_plotter(mesh)
-    hemis = [plotter.get_hemis(signal) for signal in channel_signals]
-    alpha_hemis = plotter.get_hemis(alpha_signal)
+    smoothed_channels = [
+        _smooth_surface_values(
+            signal,
+            mesh=mesh,
+            passes=surface_smoothing_passes,
+            blend=surface_smoothing_blend,
+        )
+        for signal in channel_signals
+    ]
+    smoothed_alpha = _smooth_surface_values(
+        alpha_signal,
+        mesh=mesh,
+        passes=surface_smoothing_passes,
+        blend=surface_smoothing_blend,
+    )
+    hemis = [plotter.get_hemis(signal) for signal in smoothed_channels]
+    alpha_hemis = plotter.get_hemis(smoothed_alpha)
     both_colors: np.ndarray | None = None
     bg_cmap = plt.get_cmap("gray_r")
     for selected_hemi in ("left", "right", "both"):
@@ -1544,6 +1599,7 @@ def render_run_panel_image(
     cmap: str = "fire",
     norm_percentile: int = 99,
     vmin: float | None = 0.5,
+    display_reference: np.ndarray | None = None,
 ) -> np.ndarray:
     if isinstance(run, MultiModalRun):
         return render_multimodal_brain_panel_image(
@@ -1561,6 +1617,7 @@ def render_run_panel_image(
         cmap=cmap,
         norm_percentile=norm_percentile,
         vmin=vmin,
+        display_reference=display_reference,
     )
 
 
@@ -1575,6 +1632,7 @@ def render_run_panel_bytes(
     vmin: float | None = 0.5,
     image_format: str = "JPEG",
     quality: int = 84,
+    display_reference: np.ndarray | None = None,
 ) -> bytes:
     image = Image.fromarray(
         render_run_panel_image(
@@ -1585,6 +1643,7 @@ def render_run_panel_bytes(
             cmap=cmap,
             norm_percentile=norm_percentile,
             vmin=vmin,
+            display_reference=display_reference,
         )
     )
     buffer = io.BytesIO()
@@ -1602,6 +1661,7 @@ def render_prediction_mosaic(
     max_timesteps: int = 6,
     mesh: str = "fsaverage5",
     show_stimuli: bool = True,
+    display_reference: np.ndarray | None = None,
 ) -> plt.Figure:
     """Render a compact multi-timestep figure for the dashboard."""
     n_timesteps = min(max_timesteps, len(run.preds))
@@ -1625,6 +1685,7 @@ def render_prediction_mosaic(
             timestep=idx,
             mesh=mesh,
             vmin=0.5,
+            display_reference=display_reference,
         )
         brain_ax = axes[0, idx]
         brain_ax.imshow(brain_img)
@@ -1670,6 +1731,7 @@ def render_brain_panel_image(
     cmap: str = "fire",
     norm_percentile: int = 99,
     vmin: float | None = 0.5,
+    display_reference: np.ndarray | None = None,
 ) -> np.ndarray:
     """Render one timestep as a compact RGB image for mosaics and synced playback."""
     if timestep < 0 or timestep >= len(preds):
@@ -1677,7 +1739,11 @@ def render_brain_panel_image(
     plotter = get_pyvista_plotter(mesh)
     signal = preds[timestep]
     if norm_percentile is not None:
-        signal = normalize_signal_for_display(signal, percentile=norm_percentile)
+        signal = normalize_signal_for_display(
+            signal,
+            percentile=norm_percentile,
+            reference_signal=display_reference,
+        )
     fig, axes = plt.subplots(
         1,
         len(views),
@@ -1714,6 +1780,7 @@ def render_brain_panel_bytes(
     vmin: float | None = 0.5,
     image_format: str = "JPEG",
     quality: int = 84,
+    display_reference: np.ndarray | None = None,
 ) -> bytes:
     """Render one timestep to bytes for browser playback widgets."""
     image = Image.fromarray(
@@ -1725,6 +1792,7 @@ def render_brain_panel_bytes(
             cmap=cmap,
             norm_percentile=norm_percentile,
             vmin=vmin,
+            display_reference=display_reference,
         )
     )
     buffer = io.BytesIO()
@@ -1773,6 +1841,7 @@ def render_prediction_gif(
     mesh: str = "fsaverage5",
     max_frames: int = 72,
     vmin: float | None = 0.5,
+    display_reference: np.ndarray | None = None,
 ) -> bytes:
     """Render a looping animated GIF of predicted brain activity."""
     indices = select_animation_indices(len(run.preds), max_frames=max_frames)
@@ -1786,6 +1855,7 @@ def render_prediction_gif(
                     timestep=idx,
                     mesh=mesh,
                     vmin=vmin,
+                    display_reference=display_reference,
                 )
             ),
             idx,
@@ -1810,6 +1880,50 @@ def render_prediction_gif(
     return buffer.getvalue()
 
 
+@lru_cache(maxsize=8)
+def _get_mesh_face_smoothing_cache(mesh: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    plotter = get_pyvista_plotter(mesh)
+    mesh_data = plotter._mesh["both"]
+    faces = mesh_data["faces"].astype(np.int32)
+    flat_faces = faces.reshape(-1)
+    counts = np.bincount(flat_faces, minlength=mesh_data["coords"].shape[0]).astype(float)
+    counts[counts == 0] = 1.0
+    return faces, flat_faces, counts
+
+
+def _smooth_surface_values(
+    values: np.ndarray,
+    *,
+    mesh: str = "fsaverage5",
+    passes: int = 1,
+    blend: float = 0.32,
+) -> np.ndarray:
+    if passes <= 0 or blend <= 0:
+        return np.asarray(values, dtype=float)
+
+    faces, flat_faces, counts = _get_mesh_face_smoothing_cache(mesh)
+    arr = np.asarray(values, dtype=float)
+    squeeze = arr.ndim == 1
+    if squeeze:
+        arr = arr[:, None]
+
+    smoothed = arr.copy()
+    for _ in range(passes):
+        face_means = smoothed[faces].mean(axis=1)
+        repeated = np.repeat(face_means, 3, axis=0)
+        vertex_means = np.empty_like(smoothed)
+        for column in range(smoothed.shape[1]):
+            vertex_means[:, column] = (
+                np.bincount(flat_faces, weights=repeated[:, column], minlength=counts.shape[0])
+                / counts
+            )
+        smoothed = (1.0 - blend) * smoothed + blend * vertex_means
+
+    if squeeze:
+        return smoothed[:, 0]
+    return smoothed
+
+
 def _get_surface_render_data(
     signal: np.ndarray,
     *,
@@ -1820,12 +1934,25 @@ def _get_surface_render_data(
     vmax: float | None = None,
     threshold: float | None = None,
     symmetric_cbar: bool = False,
+    display_reference: np.ndarray | None = None,
+    surface_smoothing_passes: int = 0,
+    surface_smoothing_blend: float = 0.0,
 ) -> tuple[PlotBrainPyvista, np.ndarray, np.ndarray, np.ndarray]:
     plotter = get_pyvista_plotter(mesh)
     if norm_percentile is not None:
-        signal = normalize_signal_for_display(signal, percentile=norm_percentile)
+        signal = normalize_signal_for_display(
+            signal,
+            percentile=norm_percentile,
+            reference_signal=display_reference,
+        )
     mesh_data = plotter._mesh["both"]
     stat_map = plotter.get_stat_map(signal)["both"]
+    stat_map = _smooth_surface_values(
+        stat_map,
+        mesh=mesh,
+        passes=surface_smoothing_passes,
+        blend=surface_smoothing_blend,
+    )
     sm = get_scalar_mappable(
         signal,
         get_cmap(cmap),
@@ -1857,6 +1984,8 @@ def render_interactive_brain_html(
     symmetric_cbar: bool = False,
     width: int = 980,
     height: int = 700,
+    surface_smoothing_passes: int = 1,
+    surface_smoothing_blend: float = 0.26,
 ) -> str:
     """Render one timestep as an interactive PyVista HTML scene."""
     if timestep < 0 or timestep >= len(preds):
@@ -1873,6 +2002,8 @@ def render_interactive_brain_html(
         vmax=vmax,
         threshold=threshold,
         symmetric_cbar=symmetric_cbar,
+        surface_smoothing_passes=surface_smoothing_passes,
+        surface_smoothing_blend=surface_smoothing_blend,
     )
     pv_faces = np.column_stack([np.full(len(faces), 3), faces]).astype(np.int64)
     surface = pv.PolyData(vertices, pv_faces)
@@ -1913,6 +2044,9 @@ def render_animated_brain_3d_html(
     vmin: float | None = 0.5,
     width: int = 980,
     height: int = 760,
+    display_reference: np.ndarray | None = None,
+    surface_smoothing_passes: int = 2,
+    surface_smoothing_blend: float = 0.34,
 ) -> str:
     """Render a rotatable 3D brain animation with play/pause controls."""
     from plotly.offline import get_plotlyjs
@@ -1935,6 +2069,8 @@ def render_animated_brain_3d_html(
                 timestep=idx,
                 mesh=mesh,
                 norm_percentile=norm_percentile,
+                surface_smoothing_passes=surface_smoothing_passes,
+                surface_smoothing_blend=max(0.18, surface_smoothing_blend - 0.06),
             )
             if multimodal_surface is None:
                 _, _, _, colors = _get_surface_render_data(
@@ -1943,6 +2079,9 @@ def render_animated_brain_3d_html(
                     norm_percentile=norm_percentile,
                     cmap="fire",
                     vmin=vmin,
+                    display_reference=display_reference,
+                    surface_smoothing_passes=surface_smoothing_passes,
+                    surface_smoothing_blend=surface_smoothing_blend,
                 )
                 report = {
                     "text": timeline[idx]["text"],
@@ -1971,6 +2110,9 @@ def render_animated_brain_3d_html(
                 norm_percentile=norm_percentile,
                 cmap="fire",
                 vmin=vmin,
+                display_reference=display_reference,
+                surface_smoothing_passes=surface_smoothing_passes,
+                surface_smoothing_blend=surface_smoothing_blend,
             )
         frames.append(
             {
@@ -2004,6 +2146,7 @@ def render_animated_brain_3d_html(
                 )
             ),
         ),
+        "transitionMs": 220,
         "height": height,
     }
     payload_json = json.dumps(payload)
@@ -2128,6 +2271,8 @@ def render_animated_brain_3d_html(
         let currentIndex = 0;
         let timer = null;
         let orbitTick = 0;
+        let transitionToken = 0;
+        let displayedColors = frames[0].vertexcolor.map((color) => color.slice());
 
         const trace = {{
           type: "mesh3d",
@@ -2141,8 +2286,8 @@ def render_animated_brain_3d_html(
           flatshading: false,
           hoverinfo: "skip",
           showscale: false,
-          lighting: {{ambient: 0.45, diffuse: 0.65, specular: 0.15, roughness: 0.7}},
-          lightposition: {{x: -100, y: 0, z: 200}},
+          lighting: {{ambient: 0.68, diffuse: 0.34, specular: 0.03, roughness: 1.0, fresnel: 0.02}},
+          lightposition: {{x: -70, y: 10, z: 180}},
         }};
         const layout = {{
           margin: {{l: 0, r: 0, b: 0, t: 0}},
@@ -2180,7 +2325,34 @@ def render_animated_brain_3d_html(
           currentIndex = ((index % frames.length) + frames.length) % frames.length;
           const frame = frames[currentIndex];
           orbitTick += 1;
-          Plotly.restyle(plotDiv, {{vertexcolor: [frame.vertexcolor]}}, [0]);
+          const targetColors = frame.vertexcolor;
+          const startColors = displayedColors;
+          const totalSteps = Math.max(4, Math.min(8, Math.round(payload.transitionMs / 32)));
+          const token = ++transitionToken;
+          function tick(step) {{
+            if (token !== transitionToken) {{
+              return;
+            }}
+            const ratio = Math.min(1, step / totalSteps);
+            const eased = ratio < 0.5
+              ? 4 * ratio * ratio * ratio
+              : 1 - Math.pow(-2 * ratio + 2, 3) / 2;
+            const blended = startColors.map((color, vertexIndex) => {{
+              const target = targetColors[vertexIndex];
+              return [
+                Math.round(color[0] + (target[0] - color[0]) * eased),
+                Math.round(color[1] + (target[1] - color[1]) * eased),
+                Math.round(color[2] + (target[2] - color[2]) * eased),
+              ];
+            }});
+            Plotly.restyle(plotDiv, {{vertexcolor: [blended]}}, [0]);
+            if (step < totalSteps) {{
+              window.setTimeout(() => tick(step + 1), Math.max(16, Math.round(payload.transitionMs / totalSteps)));
+              return;
+            }}
+            displayedColors = targetColors.map((color) => color.slice());
+          }}
+          tick(1);
           Plotly.relayout(plotDiv, {{"scene.camera.eye": cameraEye(orbitTick)}});
           label.textContent = `Timestep ${{frame.index + 1}} / ${{frames.length}} | ${{Number(frame.start).toFixed(2)}}s`;
           progressFill.style.width = `${{((currentIndex + 1) / Math.max(frames.length, 1)) * 100}}%`;

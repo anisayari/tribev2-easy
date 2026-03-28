@@ -7,6 +7,7 @@ import typing as tp
 import pandas as pd
 
 from tribev2.easy import (
+    build_comparison_display_reference,
     ImageComparisonRun,
     MultiModalRun,
     PredictionRun,
@@ -45,11 +46,29 @@ def _build_pipeline_summary() -> list[str]:
 
 def _build_modality_notes(run: PredictionRun | ImageComparisonRun) -> list[str]:
     if isinstance(run, ImageComparisonRun):
+        if run.compare_kind == "image":
+            return [
+                "Le run compare deux images traitees independamment puis affichees cote a cote.",
+                "Chaque image fixe est convertie en court clip video silencieux statique pour passer dans TRIBE v2.",
+                "Les timesteps pour une image ne racontent donc pas une evolution temporelle reelle; ils repetent le meme contenu visuel.",
+                "La comparaison doit surtout porter sur la distribution spatiale, la lateralite, la saillance et le ton affectif plausible du contenu visuel.",
+            ]
+        if run.compare_kind == "video":
+            return [
+                "Le run compare deux videos traitees independamment puis affichees cote a cote.",
+                "Chaque colonne correspond a un run video distinct avec sa propre timeline.",
+                "La comparaison doit rapprocher les differences de patrons corticaux du contenu visuel, sonore et verbal de chaque video.",
+            ]
+        if run.compare_kind == "audio":
+            return [
+                "Le run compare deux audios traites independamment puis affiches cote a cote.",
+                "Chaque colonne correspond a un run audio distinct avec sa propre timeline.",
+                "La comparaison doit surtout porter sur prosodie, tension, rythme, timbre et eventuel texte aligne.",
+            ]
         return [
-            "Le run compare deux images traitees independamment puis affichees cote a cote.",
-            "Chaque image fixe est convertie en court clip video silencieux statique pour passer dans TRIBE v2.",
-            "Les timesteps pour une image ne racontent donc pas une evolution temporelle reelle; ils repetent le meme contenu visuel.",
-            "La comparaison doit surtout porter sur la distribution spatiale, la lateralite, la saillance et le ton affectif plausible du contenu visuel.",
+            "Le run compare deux textes traites independamment puis affiches cote a cote.",
+            "Chaque colonne correspond a un run texte distinct avec sa propre timeline alignee ou synthetique.",
+            "La comparaison doit rapprocher les differences de patrons corticaux du contenu lexical, du ton et de la structure des deux textes.",
         ]
     if isinstance(run, MultiModalRun) or run.input_kind == "multimodal":
         return [
@@ -91,7 +110,7 @@ def _build_modality_notes(run: PredictionRun | ImageComparisonRun) -> list[str]:
 
 def _build_interpretation_contract(run: PredictionRun | ImageComparisonRun) -> dict[str, tp.Any]:
     comparison_hint = (
-        "Si deux images ou deux runs sont presents, compare explicitement image 1 vs image 2 ou run 1 vs run 2."
+        f"Si deux {run.compare_kind}s ou deux runs sont presents, compare explicitement {run.compare_kind} 1 vs {run.compare_kind} 2 ou run 1 vs run 2."
         if isinstance(run, ImageComparisonRun)
         else "Si l'utilisateur compare plusieurs moments, signale clairement les differences de pattern d'un timestep a l'autre."
     )
@@ -132,6 +151,7 @@ def build_chat_system_prompt(run: PredictionRun | ImageComparisonRun) -> str:
         *[f"- {item}" for item in _build_pipeline_summary()],
         "- Les tableaux par zone agregent la surface corticale fsaverage5 par ROIs HCP-MMP. Ils portent sur le cortex uniquement.",
         "- La radar map emotionnelle combine des indices du stimulus, les zones corticales dominantes et la modalite. Ce n'est pas une lecture directe d'un etat mental.",
+        "- Si le contexte JSON indique `display_normalization = shared_percentile_99_reference` ou une variante partagee, les intensites visuelles sont comparables entre runs sur la meme echelle d'affichage.",
         "",
         "Comment lire la modalite courante:",
         *[f"- {item}" for item in _build_modality_notes(run)],
@@ -219,6 +239,7 @@ def _prediction_run_context_images(
     run_label: str,
     image_detail: str,
     max_images: int,
+    display_reference: object | None = None,
 ) -> tuple[dict[str, tp.Any], list[dict[str, str]], list[str]]:
     frame = build_raw_timestep_frame(run)
     selected = _select_key_timestep_indices(frame, max_images=max_images)
@@ -254,6 +275,11 @@ def _prediction_run_context_images(
         "selected_timestep_image_policy": (
             "Les images jointes sont des timesteps cles choisis automatiquement a partir du debut, du milieu, de la fin et des pics de mean_abs."
         ),
+        "display_normalization": (
+            "shared_percentile_99_reference"
+            if display_reference is not None
+            else "per_run_percentile_99_reference"
+        ),
         "timestep_rows": rows_for_prompt.to_dict(orient="records"),
         "zone_payload": zone_payload,
     }
@@ -274,6 +300,7 @@ def _prediction_run_context_images(
                         timestep=idx,
                         image_format="JPEG",
                         quality=84,
+                        display_reference=tp.cast(tp.Any, display_reference),
                     )
                 ),
             }
@@ -290,22 +317,26 @@ def build_openai_context_bundle(
     """Prepare the multimodal context sent to OpenAI."""
     if isinstance(run, ImageComparisonRun):
         per_run_limit = max(1, max_images // max(len(run.runs), 1))
+        display_reference = build_comparison_display_reference(run)
         payload_runs = []
         image_parts: list[dict[str, str]] = []
         labels: list[str] = []
         for idx, item in enumerate(run.runs, start=1):
             payload, parts, run_labels = _prediction_run_context_images(
                 item,
-                run_label=f"image_{idx}",
+                run_label=f"{run.compare_kind}_{idx}",
                 image_detail=image_detail,
                 max_images=per_run_limit,
+                display_reference=display_reference,
             )
             payload_runs.append(payload)
             image_parts.extend(parts)
             labels.extend(run_labels)
         context = {
-            "kind": "tribev2_image_comparison",
-            "n_images": len(run.runs),
+            "kind": f"tribev2_{run.compare_kind}_comparison",
+            "compare_kind": run.compare_kind,
+            "n_runs": len(run.runs),
+            "display_normalization": "shared_percentile_99_reference_across_all_compared_runs",
             "tribev2_pipeline_summary": _build_pipeline_summary(),
             "comparison_notes": _build_modality_notes(run),
             "interpretation_contract": _build_interpretation_contract(run),

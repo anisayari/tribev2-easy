@@ -1,9 +1,12 @@
 import io
 from pathlib import Path
 import logging
+import sys
+import types
 import warnings
 
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageSequence
 import torch
 
@@ -13,6 +16,7 @@ from tribev2.demo_utils import build_text_events_from_text
 from tribev2 import easy as easy_module
 from tribev2 import openai_chat as openai_chat_module
 from tribev2 import utils as utils_module
+from tribev2 import eventstransforms as eventstransforms_module
 from tribev2.eventstransforms import ExtractWordsFromAudio
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
@@ -21,6 +25,7 @@ from tribev2.easy import (
     MultiModalRun,
     PRIMARY_TEXT_MODEL,
     PredictionRun,
+    build_comparison_display_reference,
     build_explainability_report,
     build_image_comparison_guide,
     build_emotion_hypothesis_frame,
@@ -32,6 +37,7 @@ from tribev2.easy import (
     collect_timestep_metadata,
     describe_timestep,
     infer_affective_cues,
+    normalize_signal_for_display,
     prepare_events,
     render_animated_brain_3d_html,
     render_prediction_gif,
@@ -82,6 +88,24 @@ def test_build_text_events_from_text_creates_contextual_word_rows():
     assert events.duration.iloc[0] == 0.5
 
 
+def test_dedupe_items_by_uid_preserves_first_occurrence():
+    items = ["clip-a", "clip-b", "clip-a", "clip-c", "clip-b"]
+
+    deduped, duplicate_count = demo_utils_module._dedupe_items_by_uid(items, lambda item: item)
+
+    assert deduped == ["clip-a", "clip-b", "clip-c"]
+    assert duplicate_count == 2
+
+
+def test_apply_warning_filters_guards_tqdm_destructor():
+    apply_warning_filters()
+    from tqdm.std import tqdm as tqdm_cls
+
+    orphan = object.__new__(tqdm_cls)
+
+    tqdm_cls.__del__(orphan)
+
+
 def test_prepare_events_supports_direct_text(tmp_path: Path):
     events, input_kind = prepare_events(
         cache_folder=tmp_path,
@@ -104,6 +128,16 @@ def test_dashboard_request_label_supports_multiple_modalities():
     )
 
     assert label == "Vidéo + Audio + Texte"
+
+
+def test_dashboard_request_label_supports_comparison_inputs():
+    label = dashboard_app_module._format_request_label(
+        {
+            "video_paths": [Path("a.mp4"), Path("b.mp4")],
+        }
+    )
+
+    assert label == "Vidéos x2"
 
 
 def test_multimodal_run_key_and_prompt_include_overlay_context():
@@ -540,15 +574,281 @@ def test_build_synced_player_html_uses_single_media_card(tmp_path: Path, monkeyp
         "render_brain_panel_bytes",
         lambda *args, **kwargs: b"brain-jpeg",
     )
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "build_emotion_hypothesis_frame",
+        lambda *args, **kwargs: pd.DataFrame(
+            [
+                {"emotion": "joy", "label": "Joie", "score_pct": 42.0},
+                {"emotion": "fear", "label": "Peur", "score_pct": 18.0},
+                {"emotion": "sadness", "label": "Tristesse", "score_pct": 11.0},
+                {"emotion": "anger", "label": "Colere", "score_pct": 7.0},
+                {"emotion": "desire", "label": "Desir", "score_pct": 15.0},
+                {"emotion": "calm", "label": "Calme", "score_pct": 22.0},
+            ]
+        ),
+    )
 
     html = dashboard_app_module.build_synced_player_html(run, cache_folder=tmp_path)
 
     assert 'id="tribe-play"' in html
     assert 'id="tribe-pause"' in html
     assert 'id="tribe-media"' in html
+    assert 'id="tribe-radar"' in html
+    assert 'id="tribe-radar-top"' in html
     assert 'class="sync-media sync-media-video"' in html
     assert "Video source" not in html
     assert "Cerveau predit en temps reel" not in html
+
+
+def test_persist_saved_run_roundtrip_for_text(tmp_path: Path):
+    run = PredictionRun(
+        events=build_text_events_from_text("A calm hopeful text example."),
+        preds=np.zeros((3, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="A calm hopeful text example.",
+    )
+
+    run_id = dashboard_app_module.persist_saved_run(tmp_path, run)
+    entries = dashboard_app_module.list_saved_runs(tmp_path)
+    loaded = dashboard_app_module.load_saved_run(tmp_path, run_id)
+
+    assert any(entry["id"] == run_id for entry in entries)
+    assert isinstance(loaded, PredictionRun)
+    assert loaded.raw_text == run.raw_text
+    assert loaded.preds.shape == (3, 20484)
+
+
+def test_persist_saved_run_stores_versioned_payload_not_live_run_object(tmp_path: Path):
+    run = PredictionRun(
+        events=build_text_events_from_text("Serialized payload"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="Serialized payload",
+    )
+
+    run_id = dashboard_app_module.persist_saved_run(tmp_path, run)
+    run_path = dashboard_app_module.get_saved_runs_folder(tmp_path) / run_id / "run.pkl"
+
+    with open(run_path, "rb") as handle:
+        payload = dashboard_app_module.pickle.load(handle)
+
+    assert isinstance(payload, dict)
+    assert payload["version"] == 2
+    assert payload["run"]["kind"] == "prediction"
+    assert payload["run"]["raw_text"] == "Serialized payload"
+
+
+def test_persist_saved_run_roundtrip_for_text_comparison(tmp_path: Path):
+    preds = np.zeros((2, 20484), dtype=float)
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(
+                events=build_text_events_from_text("first text"),
+                preds=preds.copy(),
+                segments=[],
+                input_kind="text",
+                raw_text="first text",
+            ),
+            PredictionRun(
+                events=build_text_events_from_text("second text"),
+                preds=preds.copy(),
+                segments=[],
+                input_kind="text",
+                raw_text="second text",
+            ),
+        ],
+        compare_kind="text",
+    )
+
+    run_id = dashboard_app_module.persist_saved_run(tmp_path, run)
+    loaded = dashboard_app_module.load_saved_run(tmp_path, run_id)
+
+    assert isinstance(loaded, ImageComparisonRun)
+    assert loaded.compare_kind == "text"
+    assert len(loaded.runs) == 2
+    assert loaded.runs[0].raw_text == "first text"
+    assert loaded.runs[1].raw_text == "second text"
+
+
+def test_persist_saved_run_generates_visual_preview_for_image(tmp_path: Path):
+    image_path = tmp_path / "preview-source.png"
+    Image.new("RGB", (96, 64), color=(220, 120, 80)).save(image_path)
+    run = PredictionRun(
+        events=build_text_events_from_text("visual snapshot"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="image",
+        source_path=image_path,
+    )
+
+    run_id = dashboard_app_module.persist_saved_run(tmp_path, run)
+    entries = dashboard_app_module.list_saved_runs(tmp_path)
+    entry = next(item for item in entries if item["id"] == run_id)
+    preview_path = Path(entry["folder"]) / str(entry["preview_file"])
+
+    assert preview_path.exists()
+
+
+def test_get_cached_animated_3d_html_reuses_saved_artifact(tmp_path: Path, monkeypatch):
+    dashboard_app_module.st.session_state.clear()
+    run = PredictionRun(
+        events=build_text_events_from_text("Persistent 3D view"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="Persistent 3D view",
+    )
+    calls = {"count": 0}
+
+    def fake_render(*args, **kwargs):
+        calls["count"] += 1
+        return "<html>brain-3d</html>"
+
+    monkeypatch.setattr(dashboard_app_module, "render_animated_brain_3d_html", fake_render)
+
+    html_first = dashboard_app_module.get_cached_animated_3d_html(
+        run,
+        cache_folder=tmp_path,
+        max_frames=5,
+        height=320,
+    )
+    artifact_matches = list(
+        dashboard_app_module.get_saved_run_artifacts_folder(tmp_path, run).glob("brain3d_005f_0320h*.html")
+    )
+    assert len(artifact_matches) == 1
+    artifact_path = artifact_matches[0]
+
+    dashboard_app_module.st.session_state.pop("animated_3d_html", None)
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "render_animated_brain_3d_html",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("3D should load from artifact")),
+    )
+    html_second = dashboard_app_module.get_cached_animated_3d_html(
+        run,
+        cache_folder=tmp_path,
+        max_frames=5,
+        height=320,
+    )
+
+    assert calls["count"] == 1
+    assert artifact_path.exists()
+    assert html_first == "<html>brain-3d</html>"
+    assert html_second == html_first
+
+
+def test_ensure_cached_sync_player_html_reuses_saved_artifact(tmp_path: Path, monkeypatch):
+    dashboard_app_module.st.session_state.clear()
+    media_path = tmp_path / "clip.mp4"
+    media_path.write_bytes(b"fake-video")
+    run = PredictionRun(
+        events=build_text_events_from_text("sync artifact"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="video",
+        source_path=media_path,
+    )
+    calls = {"count": 0}
+
+    def fake_build(*args, **kwargs):
+        calls["count"] += 1
+        return "<html>sync-player</html>"
+
+    monkeypatch.setattr(dashboard_app_module, "build_synced_player_html", fake_build)
+
+    html_first = dashboard_app_module.ensure_cached_sync_player_html(run, cache_folder=tmp_path)
+    artifact_path = dashboard_app_module.get_saved_run_artifacts_folder(tmp_path, run) / "sync_visible_media_v3.html"
+
+    dashboard_app_module.st.session_state.pop("sync_player_html", None)
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "build_synced_player_html",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sync player should load from artifact")),
+    )
+    html_second = dashboard_app_module.ensure_cached_sync_player_html(run, cache_folder=tmp_path)
+
+    assert calls["count"] == 1
+    assert artifact_path.exists()
+    assert html_first == "<html>sync-player</html>"
+    assert html_second == html_first
+
+
+def test_build_workspace_zone_timeseries_frame_orders_columns_from_run_zone():
+    run = PredictionRun(
+        events=build_text_events_from_text("zone timeline"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="zone timeline",
+    )
+    bundle = {
+        "run_zone": pd.DataFrame(
+            [
+                {"zone": "Zone B", "share": 0.5},
+                {"zone": "Zone A", "share": 0.3},
+                {"zone": "Zone C", "share": 0.2},
+            ]
+        ),
+        "zone_timeseries": pd.DataFrame(
+            [
+                {"timestep": 0, "zone": "Zone A", "share": 0.1},
+                {"timestep": 0, "zone": "Zone B", "share": 0.6},
+                {"timestep": 0, "zone": "Zone C", "share": 0.3},
+                {"timestep": 1, "zone": "Zone A", "share": 0.2},
+                {"timestep": 1, "zone": "Zone B", "share": 0.5},
+                {"timestep": 1, "zone": "Zone C", "share": 0.3},
+            ]
+        ),
+    }
+
+    pivot = dashboard_app_module.build_workspace_zone_timeseries_frame(run, bundle=bundle)
+
+    assert pivot.columns.tolist() == ["Zone B", "Zone A", "Zone C"]
+    assert pivot.loc[0, "Zone B"] == 0.6
+    assert pivot.loc[1, "Zone A"] == 0.2
+
+
+def test_saved_runs_gallery_html_uses_clickable_cards(tmp_path: Path):
+    preview_path = tmp_path / "preview.png"
+    Image.new("RGB", (64, 48), color=(40, 120, 200)).save(preview_path)
+    html = dashboard_app_module._build_saved_runs_gallery_html(
+        [
+            {
+                "id": "run123",
+                "kind_label": "Vidéo",
+                "subtitle": "clip.mp4",
+                "updated_at": "2026-03-28T14:22:00+01:00",
+                "timesteps": 6,
+                "folder": str(tmp_path),
+                "preview_file": preview_path.name,
+            }
+        ],
+        active_saved_id="run123",
+    )
+
+    assert '?saved_run=run123' in html
+    assert 'saved-run-card is-active' in html
+    assert 'saved-run-thumb' in html
+    assert html.startswith("<style>")
+
+
+def test_render_html_fragment_prefers_streamlit_html(monkeypatch):
+    calls = []
+
+    fake_st = types.SimpleNamespace(
+        html=lambda markup: calls.append(("html", markup)),
+        markdown=lambda markup, unsafe_allow_html=False: calls.append(
+            ("markdown", markup, unsafe_allow_html)
+        ),
+    )
+    monkeypatch.setattr(dashboard_app_module, "st", fake_st)
+
+    dashboard_app_module._render_html_fragment("<div>gallery</div>")
+
+    assert calls == [("html", "<div>gallery</div>")]
 
 
 def test_render_animated_brain_3d_html_autoplays(monkeypatch):
@@ -668,6 +968,41 @@ def test_build_openai_context_bundle_for_image_comparison(monkeypatch):
     assert any("image_2" in label for label in labels)
 
 
+def test_build_openai_context_bundle_for_text_comparison(monkeypatch):
+    preds = np.zeros((2, 20484), dtype=float)
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(
+                events=build_text_events_from_text("text one"),
+                preds=preds,
+                segments=[],
+                input_kind="text",
+                raw_text="text one",
+            ),
+            PredictionRun(
+                events=build_text_events_from_text("text two"),
+                preds=preds,
+                segments=[],
+                input_kind="text",
+                raw_text="text two",
+            ),
+        ],
+        compare_kind="text",
+    )
+    monkeypatch.setattr(
+        openai_chat_module,
+        "render_brain_panel_bytes",
+        lambda *args, **kwargs: b"fake-jpeg",
+    )
+
+    context_text, _, labels = build_openai_context_bundle(run, max_images=2)
+
+    assert "tribev2_text_comparison" in context_text
+    assert "text_1" in context_text
+    assert "text_2" in context_text
+    assert any("text_1" in label for label in labels)
+
+
 def test_build_chat_system_prompt_for_image_mentions_static_clip_and_uncertainties(tmp_path: Path):
     run = PredictionRun(
         events=easy_module.pd.DataFrame([{"type": "Video"}]),
@@ -723,6 +1058,23 @@ def test_build_chat_system_prompt_for_image_comparison_mentions_explicit_compari
     assert "predictions TRIBE v2 et non de mesures fMRI reelles" in prompt
 
 
+def test_build_chat_system_prompt_for_text_comparison_mentions_texts():
+    preds = np.zeros((2, 20484), dtype=float)
+    events = build_text_events_from_text("placeholder")
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="text", raw_text="one"),
+            PredictionRun(events=events, preds=preds, segments=[], input_kind="text", raw_text="two"),
+        ],
+        compare_kind="text",
+    )
+
+    prompt = build_chat_system_prompt(run)
+
+    assert "compare explicitement text 1 vs text 2" in prompt
+    assert "deux textes" in prompt
+
+
 def test_apply_warning_filters_ignores_transformers_path_alias_warning():
     apply_warning_filters()
 
@@ -768,3 +1120,148 @@ def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):
     assert calls["count"] == 2
     assert used_cpu_offload is True
     assert out.shape == (1, 2, 2, 3)
+
+
+def test_normalize_signal_for_display_supports_shared_reference():
+    signal = np.array([-1.0, 0.0, 1.0], dtype=float)
+    local = normalize_signal_for_display(signal, percentile=100)
+    shared = normalize_signal_for_display(
+        signal,
+        percentile=100,
+        reference_signal=np.array([-10.0, 0.0, 10.0], dtype=float),
+    )
+
+    assert np.allclose(local, np.array([0.0, 0.5, 1.0]))
+    assert np.allclose(shared, np.array([0.45, 0.5, 0.55]))
+
+
+def test_build_comparison_display_reference_flattens_both_runs():
+    events = build_text_events_from_text("comparison reference")
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(events=events, preds=np.array([[1.0, 2.0], [3.0, 4.0]]), segments=[], input_kind="text"),
+            PredictionRun(events=events, preds=np.array([[5.0, 6.0]]), segments=[], input_kind="text"),
+        ],
+        compare_kind="text",
+    )
+
+    reference = build_comparison_display_reference(run)
+
+    assert reference is not None
+    assert np.allclose(reference, np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+
+
+def test_openai_context_bundle_for_comparison_mentions_shared_display_normalization(monkeypatch):
+    monkeypatch.setattr(openai_chat_module, "render_run_panel_bytes", lambda *args, **kwargs: b"fake-jpeg")
+    preds_a = np.zeros((2, 20484), dtype=float)
+    preds_b = np.ones((2, 20484), dtype=float)
+    run = ImageComparisonRun(
+        runs=[
+            PredictionRun(
+                events=build_text_events_from_text("text one"),
+                preds=preds_a,
+                segments=[],
+                input_kind="text",
+                raw_text="text one",
+            ),
+            PredictionRun(
+                events=build_text_events_from_text("text two"),
+                preds=preds_b,
+                segments=[],
+                input_kind="text",
+                raw_text="text two",
+            ),
+        ],
+        compare_kind="text",
+    )
+
+    context_text, image_parts, labels = build_openai_context_bundle(run, max_images=4)
+
+    assert "shared_percentile_99_reference_across_all_compared_runs" in context_text
+    assert '"display_normalization": "shared_percentile_99_reference"' in context_text
+    assert image_parts
+    assert labels
+
+
+def test_get_cached_prediction_gif_supports_variant_cache_tags(tmp_path: Path, monkeypatch):
+    dashboard_app_module.st.session_state.clear()
+    run = PredictionRun(
+        events=build_text_events_from_text("comparison gif"),
+        preds=np.zeros((2, 20484), dtype=float),
+        segments=[],
+        input_kind="text",
+        raw_text="comparison gif",
+    )
+
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "render_prediction_gif",
+        lambda *args, **kwargs: b"GIF89a-variant",
+    )
+
+    cache_tag = "comparison:shared_norm:item_1"
+    gif_bytes = dashboard_app_module.get_cached_prediction_gif(
+        run,
+        cache_folder=tmp_path,
+        cache_tag=cache_tag,
+        display_reference=np.array([0.0, 1.0], dtype=float),
+    )
+
+    suffix = dashboard_app_module._artifact_variant_suffix(cache_tag)
+    artifact_path = dashboard_app_module.get_saved_run_artifacts_folder(tmp_path, run) / f"brainplayback_072f{suffix}.gif"
+
+    dashboard_app_module.st.session_state.pop("brain_gifs", None)
+    monkeypatch.setattr(
+        dashboard_app_module,
+        "render_prediction_gif",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("GIF should load from artifact")),
+    )
+    gif_bytes_second = dashboard_app_module.get_cached_prediction_gif(
+        run,
+        cache_folder=tmp_path,
+        cache_tag=cache_tag,
+        display_reference=np.array([0.0, 1.0], dtype=float),
+    )
+
+    assert artifact_path.exists()
+    assert gif_bytes == b"GIF89a-variant"
+    assert gif_bytes_second == gif_bytes
+
+
+def test_whisperx_runtime_config_forces_cpu_for_uvx_on_cuda(monkeypatch):
+    monkeypatch.delenv("TRIBEV2_WHISPERX_DEVICE", raising=False)
+    monkeypatch.setattr(ExtractWordsFromAudio, "whisperx_command", classmethod(lambda cls: ["uvx", "whisperx"]))
+    monkeypatch.setattr(eventstransforms_module.torch.cuda, "is_available", lambda: True)
+
+    device, compute_type = ExtractWordsFromAudio.whisperx_runtime_config()
+
+    assert device == "cpu"
+    assert compute_type == "int8"
+
+
+def test_whisperx_runtime_config_honors_explicit_override(monkeypatch):
+    monkeypatch.setenv("TRIBEV2_WHISPERX_DEVICE", "cuda")
+    monkeypatch.setattr(ExtractWordsFromAudio, "whisperx_command", classmethod(lambda cls: ["uvx", "whisperx"]))
+
+    device, compute_type = ExtractWordsFromAudio.whisperx_runtime_config()
+
+    assert device == "cuda"
+    assert compute_type == "float16"
+
+
+def test_whisperx_subprocess_env_includes_embedded_ffmpeg(monkeypatch, tmp_path: Path):
+    ffmpeg_dir = tmp_path / "ffmpeg-bin"
+    ffmpeg_dir.mkdir()
+    ffmpeg_exe = ffmpeg_dir / "ffmpeg.exe"
+    ffmpeg_exe.write_bytes(b"")
+    monkeypatch.setitem(
+        sys.modules,
+        "imageio_ffmpeg",
+        types.SimpleNamespace(get_ffmpeg_exe=lambda: str(ffmpeg_exe)),
+    )
+    monkeypatch.setenv("PATH", "C:\\base-path")
+
+    env = ExtractWordsFromAudio._build_subprocess_env()
+
+    assert env["IMAGEIO_FFMPEG_EXE"] == str(ffmpeg_exe)
+    assert env["PATH"].split(";")[0] == str(ffmpeg_dir)

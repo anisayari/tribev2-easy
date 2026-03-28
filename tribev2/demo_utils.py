@@ -50,6 +50,7 @@ VALID_SUFFIXES: dict[str, set[str]] = {
 }
 _HIDDEN_STATE_CPU_OFFLOAD_BYTES = 768 * 1024 * 1024
 _MEMORY_SAFE_PATCHED = False
+_OFFLOAD_LOGGED_LABELS: set[str] = set()
 
 
 class _PortableUnsafeLoader(yaml.UnsafeLoader):
@@ -99,6 +100,23 @@ def _concat_hidden_states_cpu(states: tp.Sequence[torch.Tensor]) -> torch.Tensor
     return torch.cat(cpu_states, axis=1)
 
 
+def _dedupe_items_by_uid(
+    items: tp.Sequence[tp.Any],
+    item_uid: tp.Callable[[tp.Any], str],
+) -> tuple[list[tp.Any], int]:
+    deduped: list[tp.Any] = []
+    seen: set[str] = set()
+    duplicate_count = 0
+    for item in items:
+        uid = item_uid(item)
+        if uid in seen:
+            duplicate_count += 1
+            continue
+        seen.add(uid)
+        deduped.append(item)
+    return deduped, duplicate_count
+
+
 def _concat_hidden_states_memory_safe(
     states: tp.Sequence[torch.Tensor],
     *,
@@ -112,11 +130,19 @@ def _concat_hidden_states_memory_safe(
         estimated_bytes >= _HIDDEN_STATE_CPU_OFFLOAD_BYTES
     )
     if should_offload:
-        logger.info(
-            "Offloading %s concat to CPU to avoid a %.2f GiB CUDA allocation spike.",
-            label,
-            estimated_bytes / (1024**3),
-        )
+        if label not in _OFFLOAD_LOGGED_LABELS:
+            logger.info(
+                "Offloading %s concat to CPU to avoid a %.2f GiB CUDA allocation spike.",
+                label,
+                estimated_bytes / (1024**3),
+            )
+            _OFFLOAD_LOGGED_LABELS.add(label)
+        else:
+            logger.debug(
+                "Reusing CPU offload path for %s (%.2f GiB estimated).",
+                label,
+                estimated_bytes / (1024**3),
+            )
         return _concat_hidden_states_cpu(state_list), True
     try:
         return torch.cat([state.unsqueeze(1) for state in state_list], axis=1), False
@@ -137,8 +163,24 @@ def _apply_memory_safe_extractor_patches() -> None:
     if _MEMORY_SAFE_PATCHED:
         return
 
+    from exca import map as exca_map
     from neuralset.extractors import image as ns_image
     from neuralset.extractors import video as ns_video
+
+    original_call_and_store = exca_map.MapInfra._call_and_store
+
+    def _patched_call_and_store(self, items, use_cache_dict: bool = True):
+        item_list = list(items)
+        imethod = getattr(self, "_infra_method", None)
+        item_uid = getattr(imethod, "item_uid", None)
+        if item_uid is not None and len(item_list) > 1:
+            item_list, duplicate_count = _dedupe_items_by_uid(item_list, item_uid)
+            if duplicate_count:
+                logger.warning(
+                    "Deduplicated %d extractor items with identical cache keys before compute.",
+                    duplicate_count,
+                )
+        return original_call_and_store(self, item_list, use_cache_dict=use_cache_dict)
 
     def _patched_predict_hidden_states(
         self, images: np.ndarray, audio: np.ndarray | None = None
@@ -171,6 +213,7 @@ def _apply_memory_safe_extractor_patches() -> None:
             torch.cuda.empty_cache()
         return out
 
+    exca_map.MapInfra._call_and_store = _patched_call_and_store
     ns_video._HFVideoModel.predict_hidden_states = _patched_predict_hidden_states
     ns_image.HuggingFaceImage._extract_batched_latents = (
         _patched_extract_batched_latents

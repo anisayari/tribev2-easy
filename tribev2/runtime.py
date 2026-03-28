@@ -21,6 +21,7 @@ _WARNING_FILTERS: tuple[tuple[str, type[Warning] | None], ...] = (
 )
 
 _WARNING_LOGGER_INSTALLED = False
+_TQDM_DESTRUCTOR_PATCHED = False
 
 
 def apply_warning_filters() -> None:
@@ -30,6 +31,7 @@ def apply_warning_filters() -> None:
             kwargs["category"] = category
         warnings.filterwarnings("ignore", **kwargs)
     logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
+    _install_tqdm_destructor_guard()
 
 
 def configure_file_logging(
@@ -93,3 +95,30 @@ def _install_warning_logger() -> None:
 
     warnings.showwarning = _showwarning
     _WARNING_LOGGER_INSTALLED = True
+
+
+def _install_tqdm_destructor_guard() -> None:
+    global _TQDM_DESTRUCTOR_PATCHED
+    if _TQDM_DESTRUCTOR_PATCHED:
+        return
+    try:
+        from tqdm.std import tqdm as tqdm_cls
+    except Exception:
+        return
+
+    original_del = getattr(tqdm_cls, "__del__", None)
+    if original_del is None:
+        _TQDM_DESTRUCTOR_PATCHED = True
+        return
+
+    def _safe_del(self) -> None:
+        if not hasattr(self, "last_print_t"):
+            return
+        try:
+            original_del(self)
+        except AttributeError as exc:
+            if "last_print_t" not in str(exc):
+                raise
+
+    tqdm_cls.__del__ = _safe_del
+    _TQDM_DESTRUCTOR_PATCHED = True
