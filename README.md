@@ -26,7 +26,7 @@ This fork keeps the original TRIBE v2 codebase, then adds a cleaner local workfl
 
 - Windows-friendly fixes for local inference and model loading
 - Support for newer PyTorch builds so TRIBE can run on Blackwell GPUs such as the RTX 5090
-- Public default text backbone: [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) instead of the gated Meta Llama repo
+- Preferred original text backbone: [meta-llama/Llama-3.2-3B](https://huggingface.co/meta-llama/Llama-3.2-3B), with automatic fallback to [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) when the gated repo is not accessible
 - Packaged Streamlit dashboard with local upload, prediction, export, and visualization flow
 - Integrated OpenAI GPT analysis panel to help explain timestep images and run-level outputs directly inside the dashboard
 - Direct text mode without the original TTS + ASR round-trip
@@ -121,7 +121,7 @@ The dashboard supports:
 
 ## Practical notes
 
-- The packaged dashboard defaults to the public [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) text backbone, which avoids the gated Meta repo.
+- The packaged dashboard now prefers the original [meta-llama/Llama-3.2-3B](https://huggingface.co/meta-llama/Llama-3.2-3B) text backbone and automatically falls back to [unsloth/Llama-3.2-3B](https://huggingface.co/unsloth/Llama-3.2-3B) if the gated Meta repo is unavailable in the active environment.
 - Audio transcription still requires `uvx whisperx` if you enable ASR in the pipeline or dashboard.
 - For NVIDIA Blackwell GPUs such as the RTX 5090, use a PyTorch build with CUDA 12.8+ and Blackwell support, such as `torch 2.7.x` or newer.
 

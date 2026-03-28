@@ -1016,8 +1016,10 @@ def input_panel(cache_folder: Path) -> tuple[dict, dict, bool]:
         if os.getenv("OPENAI_API_KEY", ""):
             st.caption("Variable d'environnement OPENAI_API_KEY detectee. Laissez le champ vide pour l'utiliser.")
         st.caption(
-            "Le dashboard utilise par defaut `unsloth/Llama-3.2-3B`, "
-            "un backbone public non gated compatible avec le codeur texte du projet."
+            "Le dashboard prefere `meta-llama/Llama-3.2-3B` pour rester aligné "
+            "avec le repo d'origine, puis repasse automatiquement sur "
+            "`unsloth/Llama-3.2-3B` si le repo gated n'est pas accessible "
+            "dans l'environnement courant."
         )
 
     options = {

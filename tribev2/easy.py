@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -44,7 +45,11 @@ from tribev2.plotting.utils import (
     robust_normalize,
 )
 
-DEFAULT_TEXT_MODEL = "unsloth/Llama-3.2-3B"
+logger = logging.getLogger(__name__)
+
+PRIMARY_TEXT_MODEL = "meta-llama/Llama-3.2-3B"
+FALLBACK_TEXT_MODEL = "unsloth/Llama-3.2-3B"
+DEFAULT_TEXT_MODEL = PRIMARY_TEXT_MODEL
 VALID_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
@@ -153,6 +158,30 @@ def resolve_text_model_name(text_model_name: str | None = None) -> str:
     return candidate
 
 
+def resolve_text_model_candidates(text_model_name: str | None = None) -> list[str]:
+    """Resolve a preferred->fallback chain for the TRIBE text extractor."""
+    candidate = resolve_text_model_name(text_model_name)
+    if candidate == PRIMARY_TEXT_MODEL:
+        return [PRIMARY_TEXT_MODEL, FALLBACK_TEXT_MODEL]
+    return [candidate]
+
+
+def _is_text_model_access_error(exc: Exception) -> bool:
+    """Return True when the preferred text repo is unavailable in this env."""
+    message = f"{type(exc).__name__}: {exc}".lower()
+    patterns = (
+        "gated repo",
+        "cannot access gated repo",
+        "trying to access a gated repo",
+        "awaiting a review",
+        "403 client error",
+        "401 client error",
+        "repository not found",
+        "access to model",
+    )
+    return any(pattern in message for pattern in patterns)
+
+
 def load_model(
     *,
     checkpoint: str = "facebook/tribev2",
@@ -168,21 +197,42 @@ def load_model(
     merged_update = {"data.num_workers": int(num_workers)}
     if config_update:
         merged_update.update(config_update)
-    if text_model_name is None:
-        merged_update.setdefault(
-            "data.text_feature.model_name",
-            resolve_text_model_name(),
-        )
-    else:
-        merged_update["data.text_feature.model_name"] = resolve_text_model_name(
-            text_model_name
-        )
-    return TribeModel.from_pretrained(
-        checkpoint,
-        cache_folder=cache_folder,
-        device=resolve_device(device),
-        config_update=merged_update,
+    requested_text_model = (
+        text_model_name
+        if text_model_name is not None
+        else tp.cast(str | None, merged_update.get("data.text_feature.model_name"))
     )
+    candidates = resolve_text_model_candidates(requested_text_model)
+    last_error: Exception | None = None
+    for index, candidate in enumerate(candidates):
+        current_update = dict(merged_update)
+        current_update["data.text_feature.model_name"] = candidate
+        try:
+            model = TribeModel.from_pretrained(
+                checkpoint,
+                cache_folder=cache_folder,
+                device=resolve_device(device),
+                config_update=current_update,
+            )
+            setattr(model, "_tribev2_text_model_name", candidate)
+            if index > 0:
+                logger.warning(
+                    "Loaded TRIBE text backbone fallback '%s' after preferred model was unavailable.",
+                    candidate,
+                )
+            return model
+        except Exception as exc:
+            last_error = exc
+            is_last = index == len(candidates) - 1
+            if is_last or not _is_text_model_access_error(exc):
+                raise
+            logger.warning(
+                "Preferred text backbone '%s' unavailable, retrying with fallback '%s'.",
+                candidate,
+                candidates[index + 1],
+            )
+    assert last_error is not None
+    raise last_error
 
 
 def _prepare_media_events_with_quiet_stderr(

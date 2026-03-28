@@ -13,7 +13,9 @@ from tribev2 import openai_chat as openai_chat_module
 from tribev2.eventstransforms import ExtractWordsFromAudio
 from tribev2.easy import (
     DEFAULT_TEXT_MODEL,
+    FALLBACK_TEXT_MODEL,
     ImageComparisonRun,
+    PRIMARY_TEXT_MODEL,
     PredictionRun,
     build_explainability_report,
     build_image_comparison_guide,
@@ -25,6 +27,7 @@ from tribev2.easy import (
     prepare_events,
     render_animated_brain_3d_html,
     render_prediction_gif,
+    resolve_text_model_candidates,
     resolve_text_model_name,
 )
 from tribev2.openai_chat import (
@@ -62,8 +65,22 @@ def test_prepare_events_supports_direct_text(tmp_path: Path):
     assert set(events.type.unique()) == {"Word"}
 
 
-def test_resolve_text_model_name_defaults_to_public_repo():
+def test_resolve_text_model_name_defaults_to_preferred_repo():
     assert resolve_text_model_name() == DEFAULT_TEXT_MODEL
+
+
+def test_resolve_text_model_candidates_adds_fallback_for_meta_repo():
+    assert resolve_text_model_candidates() == [PRIMARY_TEXT_MODEL, FALLBACK_TEXT_MODEL]
+    assert resolve_text_model_candidates(PRIMARY_TEXT_MODEL) == [
+        PRIMARY_TEXT_MODEL,
+        FALLBACK_TEXT_MODEL,
+    ]
+
+
+def test_resolve_text_model_candidates_keeps_explicit_non_meta_model():
+    local_model = "C:/models/custom-llama"
+    assert resolve_text_model_candidates(FALLBACK_TEXT_MODEL) == [FALLBACK_TEXT_MODEL]
+    assert resolve_text_model_candidates(local_model) == [local_model]
 
 
 def test_describe_timestep_returns_readable_summary():
