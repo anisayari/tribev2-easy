@@ -1,4 +1,6 @@
 from pathlib import Path
+import logging
+import warnings
 
 import numpy as np
 from PIL import Image
@@ -30,6 +32,7 @@ from tribev2.openai_chat import (
     build_openai_context_bundle,
     build_raw_timestep_frame,
 )
+from tribev2.runtime import apply_warning_filters, configure_file_logging
 
 
 def test_build_text_events_from_text_creates_contextual_word_rows():
@@ -514,6 +517,30 @@ def test_build_chat_system_prompt_for_image_comparison_mentions_explicit_compari
 
     assert "compare explicitement image 1 vs image 2" in prompt
     assert "predictions TRIBE v2 et non de mesures fMRI reelles" in prompt
+
+
+def test_apply_warning_filters_ignores_transformers_path_alias_warning():
+    apply_warning_filters()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.warn(
+            "Accessing `__path__` from `.models.vit.image_processing_vit`. Returning `__path__` instead. Behavior may be different and this alias will be removed in future versions.",
+            FutureWarning,
+        )
+
+    assert caught == []
+
+
+def test_configure_file_logging_writes_package_logs(tmp_path: Path):
+    log_file = configure_file_logging(tmp_path / "logs" / "tribev2-dashboard.log")
+
+    logger = logging.getLogger("tribev2.test")
+    logger.info("log-line-for-test")
+    for handler in logging.getLogger("tribev2").handlers:
+        handler.flush()
+
+    assert log_file.exists()
+    assert "log-line-for-test" in log_file.read_text(encoding="utf-8")
 
 
 def test_concat_hidden_states_memory_safe_retries_on_cpu(monkeypatch):

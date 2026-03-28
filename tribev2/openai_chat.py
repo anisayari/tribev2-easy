@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import typing as tp
 
 import pandas as pd
@@ -14,6 +15,7 @@ from tribev2.easy import (
 )
 
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-5.4"
+LOGGER = logging.getLogger("tribev2.openai_chat")
 
 COMMON_UNCERTAINTIES = [
     "l'ordre exact des images si l'affichage ne suit pas strictement t0→tN ou si seules des frames cles ont ete jointes",
@@ -314,6 +316,13 @@ def request_openai_run_explanation(
     """Send the current run plus the user prompt to OpenAI Responses API."""
     from openai import OpenAI
 
+    LOGGER.info(
+        "OpenAI request start | model=%s | include_context=%s | max_images=%s | comparison=%s",
+        model,
+        include_context,
+        max_images,
+        isinstance(run, ImageComparisonRun),
+    )
     client = OpenAI(api_key=api_key)
     labels: list[str] = []
     content: list[dict[str, str]] = []
@@ -349,5 +358,10 @@ def request_openai_run_explanation(
         previous_response_id=previous_response_id,
         reasoning={"effort": reasoning_effort},
         input=input_items,
+    )
+    LOGGER.info(
+        "OpenAI request complete | model=%s | response_id=%s",
+        model,
+        getattr(response, "id", None),
     )
     return extract_response_text(response), getattr(response, "id", None), labels

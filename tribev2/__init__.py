@@ -5,23 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
-import warnings
+from .runtime import apply_warning_filters
 
-warnings.filterwarnings(
-    "ignore",
-    message=r"LabelEncoder: event_types has not been set.*",
-    category=UserWarning,
-)
-warnings.filterwarnings(
-    "ignore",
-    message=r"The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
-    category=FutureWarning,
-)
-warnings.filterwarnings(
-    "ignore",
-    message=r"The events dataframe contains an `Index` column.*",
-    category=UserWarning,
-)
+apply_warning_filters()
 logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
 
 from tribev2.demo_utils import TribeModel, build_text_events_from_text

@@ -11,42 +11,20 @@ from pathlib import Path
 import shutil
 import typing as tp
 import uuid
-import warnings
 
 import numpy as np
 from PIL import Image
 import streamlit as st
 import streamlit.components.v1 as components
 
+from tribev2.runtime import apply_warning_filters, configure_file_logging
 from tribev2.eventstransforms import ExtractWordsFromAudio
+
+LOGGER = logging.getLogger("tribev2.dashboard")
 
 
 def _apply_warning_filters() -> None:
-    warnings.filterwarnings(
-        "ignore",
-        message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"LabelEncoder: event_types has not been set.*",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
-        category=FutureWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"The events dataframe contains an `Index` column.*",
-        category=UserWarning,
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"LabelEncoder has only found one label.*",
-        category=UserWarning,
-    )
+    apply_warning_filters()
     logging.getLogger("neuralset.extractors.base").setLevel(logging.ERROR)
 
 
@@ -77,6 +55,13 @@ from tribev2.openai_chat import (
 
 def configure_runtime_noise() -> None:
     _apply_warning_filters()
+
+
+def configure_dashboard_logging(cache_folder: Path) -> Path:
+    log_path = configure_file_logging(cache_folder / "logs" / "tribev2-dashboard.log")
+    logging.getLogger("tribev2.openai_chat").setLevel(logging.INFO)
+    LOGGER.info("Dashboard bootstrap complete | cache=%s", cache_folder)
+    return log_path
 
 
 def apply_theme() -> None:
@@ -584,6 +569,7 @@ def get_cached_animated_3d_html(
     html_cache = st.session_state.setdefault("animated_3d_html", {})
     html_key = f"{get_run_cache_key(run)}:3d:{max_frames}:{height}"
     if html_key not in html_cache:
+        LOGGER.info("Generating 3D animation HTML | key=%s | max_frames=%s", html_key, max_frames)
         with st.spinner(spinner_label):
             html_cache[html_key] = render_animated_brain_3d_html(
                 run,
@@ -653,6 +639,7 @@ def render_openai_chat_panel(
         chat_meta[1].metric("Images", int(max_images))
         st.caption("Le prompt systeme demande une lecture prudente: patterns corticaux, valence plausible, emotions candidates et incertitudes obligatoires.")
         if st.button("Nouvelle conversation", width="stretch", key=f"chat_reset_{run_key}"):
+            LOGGER.info("OpenAI chat reset | run=%s", run_key)
             sessions[run_key] = {"messages": [], "previous_response_id": None}
             st.rerun()
 
@@ -682,6 +669,12 @@ def render_openai_chat_panel(
             return
 
         session["messages"].append({"role": "user", "content": prompt})
+        LOGGER.info(
+            "OpenAI chat prompt | run=%s | model=%s | chars=%s",
+            run_key,
+            model,
+            len(prompt),
+        )
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -701,6 +694,7 @@ def render_openai_chat_panel(
                         context_bundle=context_bundle,
                     )
             except Exception as exc:
+                LOGGER.exception("OpenAI chat request failed | run=%s | model=%s", run_key, model)
                 session["messages"].append(
                     {
                         "role": "assistant",
@@ -712,6 +706,12 @@ def render_openai_chat_panel(
             if labels and session.get("previous_response_id") is None:
                 st.caption("Contexte envoye: " + " | ".join(labels))
             st.markdown(reply)
+            LOGGER.info(
+                "OpenAI chat reply received | run=%s | model=%s | chars=%s",
+                run_key,
+                model,
+                len(reply),
+            )
 
         session["messages"].append({"role": "assistant", "content": reply})
         session["previous_response_id"] = response_id
@@ -1068,6 +1068,13 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
             (100, "Run termine."),
         ]
         progress_bar, update_progress = render_action_progress(progress_host, progress_steps)
+        LOGGER.info(
+            "Prediction requested | source=%s | checkpoint=%s | device=%s | workers=%s",
+            _format_request_label(request),
+            options["checkpoint"],
+            options["device"],
+            options["num_workers"],
+        )
         try:
             update_progress(1)
             model = get_model(
@@ -1082,6 +1089,7 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
                 image_runs: list[PredictionRun] = []
                 total_images = max(1, len(image_paths))
                 for idx, image_path in enumerate(image_paths, start=1):
+                    LOGGER.info("Preparing image run | index=%s/%s | path=%s", idx, total_images, image_path)
                     update_progress(2)
                     events, input_kind = prepare_events(
                         cache_folder=cache_folder,
@@ -1132,8 +1140,22 @@ def run_prediction_ui(cache_folder: Path, request: dict, options: dict, launch_p
             st.session_state["interactive_html_by_timestep"] = {}
             st.session_state["video_exports"] = {}
             update_progress(5)
+            if isinstance(run, ImageComparisonRun):
+                LOGGER.info(
+                    "Prediction completed | comparison=%s | runs=%s",
+                    True,
+                    len(run.runs),
+                )
+            else:
+                LOGGER.info(
+                    "Prediction completed | input_kind=%s | timesteps=%s | vertices=%s",
+                    run.input_kind,
+                    len(run.preds),
+                    run.preds.shape[1],
+                )
             st.success("Prediction prete. Les vues et exports sont disponibles plus bas.")
         except Exception as exc:
+            LOGGER.exception("Prediction failed | source=%s", _format_request_label(request))
             progress_host.empty()
             st.exception(exc)
 
@@ -1223,6 +1245,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                         width="stretch",
                         key=f"prepare_sync_{run_key}",
                     ):
+                        LOGGER.info("Preparing synced player | run=%s", run_key)
                         sync_progress_host = st.empty()
                         _, sync_progress = render_action_progress(
                             sync_progress_host,
@@ -1278,6 +1301,12 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                 export_key = f"{max_timesteps}:{fps_options[fps_label]}"
                 video_cache = st.session_state.setdefault("video_exports", {})
                 if st.button("Generer le MP4", width="stretch", key=f"export_mp4_{run_key}"):
+                    LOGGER.info(
+                        "Generating MP4 | run=%s | timesteps=%s | fps=%s",
+                        run_key,
+                        max_timesteps,
+                        fps_options[fps_label],
+                    )
                     mp4_progress_host = st.empty()
                     _, mp4_progress = render_action_progress(
                         mp4_progress_host,
@@ -1295,6 +1324,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                         interpolated_fps=fps_options[fps_label],
                     )
                     video_cache[export_key] = str(video_path)
+                    LOGGER.info("MP4 generated | run=%s | path=%s", run_key, video_path)
                     mp4_progress(2)
                 video_path_str = video_cache.get(export_key)
                 if video_path_str:
@@ -1316,6 +1346,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                 if st.button("Generer la mosaique", width="stretch", key=f"mosaic_{run_key}"):
                     st.session_state["mosaic_requested"] = True
                     if mosaic_key not in mosaic_cache:
+                        LOGGER.info("Generating mosaic | run=%s", run_key)
                         mosaic_progress_host = st.empty()
                         _, mosaic_progress = render_action_progress(
                             mosaic_progress_host,
@@ -1327,6 +1358,7 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
                         )
                         mosaic_progress(1)
                         mosaic_cache[mosaic_key] = render_prediction_mosaic(run)
+                        LOGGER.info("Mosaic generated | run=%s", run_key)
                         mosaic_progress(2)
                 if st.session_state.get("mosaic_requested") and mosaic_key in mosaic_cache:
                     st.pyplot(mosaic_cache[mosaic_key], clear_figure=False, width="stretch")
@@ -1379,6 +1411,11 @@ def results_panel(cache_folder: Path, run: PredictionRun | ImageComparisonRun) -
 
 def comparison_results_panel(run: ImageComparisonRun) -> None:
     common_timesteps = min(len(item.preds) for item in run.runs)
+    LOGGER.info(
+        "Rendering comparison results | images=%s | common_timesteps=%s",
+        len(run.runs),
+        common_timesteps,
+    )
     with st.container(border=True):
         section_head(
             "Image comparison",
@@ -1441,6 +1478,9 @@ def main() -> None:
     apply_theme()
     hero_slot = st.empty()
     cache_folder = Path(st.sidebar.text_input("Dossier cache", value="./cache"))
+    log_path = configure_dashboard_logging(cache_folder)
+    with st.sidebar:
+        st.caption(f"Log file: `{log_path}`")
     request, options, launch_pressed = input_panel(cache_folder)
     with hero_slot.container():
         hero(request, options, cache_folder)
